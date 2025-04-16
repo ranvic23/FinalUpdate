@@ -31,7 +31,7 @@ interface Order {
     paymentStatus?: string;
     gcashReference?: string;
     totalAmount: number;
-    orderStatus: string;
+    status: string;
     orderType: string;
   };
   items: Array<{
@@ -173,15 +173,15 @@ export default function Orders() {
 
     const matchesStatusFilter =
       filterStatus === "all" ||
-      order.orderDetails.orderStatus === filterStatus;
+      order.orderDetails.status === filterStatus;
 
     const matchesTypeFilter =
       filterType === "all" ||
       (filterType === "walk-in" && order.orderDetails.orderType === "walk-in") ||
       (filterType === "scheduled" && order.orderDetails.orderType === "scheduled") ||
       (filterType === "pickup-now" && order.orderDetails.orderType === "pickup-now") ||
-      (filterType === "pending-verification" && order.orderDetails.orderStatus === "pending") ||
-      (filterType === "completed" && order.orderDetails.orderStatus === "completed");
+      (filterType === "pending-verification" && order.orderDetails.status === "pending") ||
+      (filterType === "completed" && order.orderDetails.status === "completed");
 
     return matchesSearch && matchesPaymentFilter && matchesStatusFilter && matchesTypeFilter;
   });
@@ -294,7 +294,7 @@ export default function Orders() {
                       Pickup Details
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Payment
+                      Payment Status
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Actions
@@ -361,13 +361,17 @@ export default function Orders() {
                             </div>
                             <div>
                               <span className={`px-2 py-1 text-sm rounded-full ${
-                                order.orderDetails.paymentStatus === "approved"
+                                order.orderDetails.status === "Cancelled"
+                                  ? "bg-red-100 text-red-800"
+                                  : order.orderDetails.paymentStatus === "approved"
                                   ? "bg-green-100 text-green-800"
                                   : order.orderDetails.paymentStatus === "rejected"
                                   ? "bg-red-100 text-red-800"
                                   : "bg-yellow-100 text-yellow-800"
                               }`}>
-                                {order.orderDetails.paymentStatus || "pending"}
+                                {order.orderDetails.status === "Cancelled"
+                                  ? "cancelled"
+                                  : order.orderDetails.paymentStatus || "pending"}
                               </span>
                             </div>
                             {order.orderDetails.gcashReference && (
@@ -425,6 +429,10 @@ export default function Orders() {
                       <p>
                         Created At:{" "}
                         {formatDate(selectedOrder.orderDetails.createdAt)}
+                      </p>
+                      <p>
+                        Status:{" "}
+                        {selectedOrder.orderDetails.status}
                       </p>
                     </div>
 

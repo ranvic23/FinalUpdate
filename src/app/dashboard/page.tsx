@@ -605,7 +605,8 @@ export default function Dashboard() {
         if (item.currentStock <= item.minimumStock) {
           const itemType = item.type === 'size' ? 'Size' : 'Variety';
           const status = item.currentStock === 0 ? 'Out of Stock' : 'Critical Level';
-          const message = `${status}: ${itemType} - ${item.name} (${item.currentStock} slices remaining)`;
+          const unit = item.type === 'size' ? 'boxes/tray' : 'slices';
+          const message = `${status}: ${itemType} - ${item.name} (${item.currentStock} ${unit} remaining)`;
           
           setNotifications(prev => [...prev, {
             id: `stock-${item.id}-${Date.now()}`,
@@ -615,7 +616,8 @@ export default function Dashboard() {
           }]);
         } else if (item.currentStock <= item.criticalLevel) {
           const itemType = item.type === 'size' ? 'Size' : 'Variety';
-          const message = `Low Stock: ${itemType} - ${item.name} (${item.currentStock} slices remaining)`;
+          const unit = item.type === 'size' ? 'boxes/tray' : 'slices';
+          const message = `Low Stock: ${itemType} - ${item.name} (${item.currentStock} ${unit} remaining)`;
           
           setNotifications(prev => [...prev, {
             id: `stock-${item.id}-${Date.now()}`,

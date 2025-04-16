@@ -137,14 +137,14 @@ const Sidebar = () => {
                     Walk-in Orders
                   </div>
                 </Link>
-                <Link href="/orders/pickup-now">
+               {/* <Link href="/orders/pickup-now">
                   <div className="flex items-center w-full p-2 leading-tight transition-all rounded-lg outline-none text-start hover:bg-bg-light-brown hover:bg-opacity-80 hover:text-white focus:bg-blue-gray-50 focus:bg-opacity-80 focus:text-blue-gray-900 active:bg-blue-gray-50 active:bg-opacity-80 active:text-blue-gray-900">
                     <div className="grid mr-4 place-items-center">
                       <Clock className="w-4 h-4" />
                     </div>
                     Pickup Now
                   </div>
-                </Link>
+                </Link> */}
                 <Link href="/orders/tracking-orders">
                   <div className="flex items-center w-full p-2 leading-tight transition-all rounded-lg outline-none text-start hover:bg-bg-light-brown hover:bg-opacity-80 hover:text-white focus:bg-blue-gray-50 focus:bg-opacity-80 focus:text-blue-gray-900 active:bg-blue-gray-50 active:bg-opacity-80 active:text-blue-gray-900">
                     <div className="grid mr-4 place-items-center">
@@ -207,7 +207,18 @@ const Sidebar = () => {
                     Products
                   </div>
                 </Link>
-                <Link href="/inventory/sizes">
+                <Link href="/inventory/price-management">
+                  <div
+                    role="button"
+                    className="flex items-center w-full p-3 leading-tight transition-all rounded-lg outline-none text-start hover:bg-bg-light-brown hover:bg-opacity-80 hover:text-white focus:bg-blue-gray-50 focus:bg-opacity-80 focus:text-blue-gray-900 active:bg-blue-gray-50 active:bg-opacity-80 active:text-blue-gray-900"
+                  >
+                    <div className="grid mr-4 place-items-center">
+                      <PercentCircle className="w-5 h-5" />
+                    </div>
+                    Price Management
+                  </div>
+                </Link>
+              {/*  <Link href="/inventory/sizes">
                   <div
                     role="button"
                     className="flex items-center w-full p-3 leading-tight transition-all rounded-lg outline-none text-start hover:bg-bg-light-brown hover:bg-opacity-80 hover:text-white focus:bg-blue-gray-50 focus:bg-opacity-80 focus:text-blue-gray-900 active:bg-blue-gray-50 active:bg-opacity-80 active:text-blue-gray-900"
@@ -217,7 +228,7 @@ const Sidebar = () => {
                     </div>
                     Sizes
                   </div>
-                </Link>
+                </Link> */}
                 <Link href="/inventory/stock-management">
                   <div
                     role="button"

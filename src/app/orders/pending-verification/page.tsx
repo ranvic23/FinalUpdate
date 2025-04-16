@@ -15,6 +15,7 @@ import {
 import { db } from "@/app/firebase-config";
 import ProtectedRoute from "@/app/components/protectedroute";
 import Sidebar from "@/app/components/Sidebar";
+import { releaseReservedStock } from "@/app/utils/scheduledOrders";
 
 interface OrderItem {
   productSize: string;
@@ -97,12 +98,11 @@ export default function PendingVerificationPage() {
   const updatePaymentStatus = async (orderId: string, newStatus: string) => {
     try {
       const orderRef = doc(db, "orders", orderId);
+      const orderDoc = await getDoc(orderRef);
+      const orderData = orderDoc.data();
       
       // When approving payment, update order status and create sales record
       if (newStatus === "approved") {
-        const orderDoc = await getDoc(orderRef);
-        const orderData = orderDoc.data();
-
         // Update order status
         await updateDoc(orderRef, {
           "orderDetails.paymentStatus": newStatus,
@@ -144,11 +144,17 @@ export default function PendingVerificationPage() {
           )
         );
       } else {
-        // For rejection, just update payment status
+        // For rejection, update both payment status and order status to cancelled
         await updateDoc(orderRef, {
           "orderDetails.paymentStatus": newStatus,
+          "orderDetails.status": "Cancelled",
           "orderDetails.updatedAt": new Date().toISOString(),
         });
+
+        // If it's a scheduled order, release any reserved stock
+        if (orderData?.orderDetails?.isScheduled) {
+          await releaseReservedStock(orderId, "Cancelled");
+        }
 
         setOrders((prevOrders) =>
           prevOrders.map((o) =>
@@ -158,6 +164,7 @@ export default function PendingVerificationPage() {
                   orderDetails: {
                     ...o.orderDetails,
                     paymentStatus: newStatus,
+                    status: "Cancelled",
                   },
                 }
               : o
@@ -177,8 +184,8 @@ export default function PendingVerificationPage() {
 
     const q = query(
       ordersRef,
-      where("orderDetails.status", "==", "Pending Verification"),
       where("orderDetails.paymentStatus", "==", "pending"),
+      where("orderDetails.status", "!=", "Cancelled"),
       orderBy("orderDetails.createdAt", "desc")
     );
 
@@ -189,20 +196,51 @@ export default function PendingVerificationPage() {
         const ordersList = await Promise.all(
           querySnapshot.docs.map(async (doc) => {
             const data = doc.data();
-            console.log("Raw order data:", {
+            // Skip cancelled orders
+            if (data.orderDetails?.status === "Cancelled") {
+              return null;
+            }
+            
+            console.log("Processing order:", doc.id, {
+              orderType: data.orderType,
               paymentMethod: data.orderDetails?.paymentMethod,
-              gcashReference: data.orderDetails?.gcashReference,
-              gcashScreenshotUrl: data.orderDetails?.gcashScreenshotUrl
+              paymentStatus: data.orderDetails?.paymentStatus,
+              status: data.orderDetails?.status,
+              customerName: data.customerName,
+              userId: data.userId
             });
 
             let userDetails = null;
-            // Only fetch user details for non-walk-in orders
-            if (data.orderType !== "walk-in") {
-              userDetails = await fetchUserDetails(data.userId);
-            } else {
-              // For walk-in orders, use customerName
+            // For walk-in orders
+            if (data.orderType === "walk-in") {
               userDetails = {
                 firstName: data.customerName || "Walk-in",
+                lastName: "Customer"
+              };
+            }
+            // For online orders with userDetails
+            else if (data.userDetails?.firstName && data.userDetails?.lastName) {
+              userDetails = {
+                firstName: data.userDetails.firstName,
+                lastName: data.userDetails.lastName
+              };
+            }
+            // For online orders with customerDetails
+            else if (data.customerDetails?.name) {
+              const nameParts = data.customerDetails.name.split(" ");
+              userDetails = {
+                firstName: nameParts[0],
+                lastName: nameParts.slice(1).join(" ") || ""
+              };
+            }
+            // Fetch from customers collection as fallback
+            else if (data.userId) {
+              userDetails = await fetchUserDetails(data.userId);
+            }
+            // Default fallback
+            else {
+              userDetails = {
+                firstName: "Unknown",
                 lastName: "Customer"
               };
             }
@@ -215,7 +253,7 @@ export default function PendingVerificationPage() {
                 ...data.orderDetails,
                 paymentMethod: data.orderDetails?.paymentMethod || "Cash",
                 paymentStatus: data.orderDetails?.paymentStatus || "pending",
-                status: data.orderDetails?.status || "Pending Verification",
+                status: data.orderDetails?.status || "Pending",
                 totalAmount: data.orderDetails?.totalAmount || 0,
                 gcashReference: data.orderDetails?.gcashReference || "N/A",
                 gcashScreenshotUrl: data.orderDetails?.gcashScreenshotUrl || null,
@@ -230,7 +268,8 @@ export default function PendingVerificationPage() {
         );
 
         console.log("Processed orders:", ordersList);
-        setOrders(ordersList);
+        // Filter out any null values (cancelled orders)
+        setOrders(ordersList.filter((order): order is Order => order !== null));
         setIsLoading(false);
         setError(null);
       },
@@ -346,7 +385,7 @@ export default function PendingVerificationPage() {
                       Reference Number
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Status
+                      Payment Status
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Actions
@@ -427,11 +466,13 @@ export default function PendingVerificationPage() {
                           <span className={`px-2 py-1 text-xs font-medium rounded-full ${
                             order.orderDetails.paymentStatus === "approved"
                               ? "bg-green-100 text-green-800"
-                              : order.orderDetails.paymentStatus === "rejected"
+                              : order.orderDetails.paymentStatus === "rejected" || order.orderDetails.status === "Cancelled"
                               ? "bg-red-100 text-red-800"
                               : "bg-yellow-100 text-yellow-800"
                           }`}>
-                            {order.orderDetails.paymentStatus || "pending"}
+                            {order.orderDetails.status === "Cancelled" 
+                              ? "cancelled" 
+                              : order.orderDetails.paymentStatus || "pending"}
                           </span>
                         </td>
                         <td className="px-6 py-4">

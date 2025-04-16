@@ -167,8 +167,8 @@ export const releaseReservedStock = async (
     const q = query(reservedStockRef, where("orderId", "==", orderId));
     const snapshot = await getDocs(q);
 
-    // If order is completed, delete the reserved stock
-    if (status === "Completed") {
+    // If order is completed or cancelled, delete the reserved stock
+    if (status === "Completed" || status === "Cancelled") {
       const deletePromises = snapshot.docs.map(doc => deleteDoc(doc.ref));
       await Promise.all(deletePromises);
     } else {
@@ -201,12 +201,17 @@ export const getScheduledOrders = async (
     const snapshot = await getDocs(q);
     return snapshot.docs.map(doc => {
       const data = doc.data();
+      const status = data.orderDetails.status;
+      
+      // For cancelled orders, ensure we don't show reserved stock
+      const reservedStockIds = status === "Cancelled" ? [] : (data.orderDetails.reservedStockIds || []);
+      
       return {
         id: doc.id,
         orderId: doc.id,
         customerName: data.userDetails ? 
           `${data.userDetails.firstName} ${data.userDetails.lastName}` : 
-          "Walk-in Customer",
+          data.customerName || "Walk-in Customer",
         pickupDate: data.orderDetails.pickupDate,
         pickupTime: data.orderDetails.pickupTime,
         items: data.items.map((item: any) => ({
@@ -214,8 +219,8 @@ export const getScheduledOrders = async (
           productVarieties: item.productVarieties,
           productQuantity: item.productQuantity
         })),
-        status: data.orderDetails.status,
-        reservedStockIds: data.orderDetails.reservedStockIds || []
+        status: status,
+        reservedStockIds: reservedStockIds
       };
     });
   } catch (error) {
@@ -229,7 +234,11 @@ export const getReservedStockForDate = async (
 ): Promise<ReservedStock[]> => {
   try {
     const reservedStockRef = collection(db, "reserved_stock");
-    const q = query(reservedStockRef, where("reservedFor", "==", date));
+    const q = query(
+      reservedStockRef, 
+      where("reservedFor", "==", date),
+      where("orderStatus", "!=", "Cancelled")
+    );
     const snapshot = await getDocs(q);
     
     return snapshot.docs.map(doc => ({
