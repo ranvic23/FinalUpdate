@@ -136,12 +136,14 @@ import {
   SCHEDULED_STATUS_FLOW
 } from "@/app/utils/scheduledOrders";
 
+import { updateStockOnOrderStatus, restoreStockOnCancel } from "@/app/inventory/stock-management/page";
+
 // Define status flows
 const regularStatusFlow = [
-  "Order Confirmed",
-  "Preparing Order",
-  "Ready for Pickup",
-  "Completed"
+    "Order Confirmed",
+    "Preparing Order",
+    "Ready for Pickup",
+    "Completed"
 ] as const;
 
 // Define the status types
@@ -168,6 +170,13 @@ type CustomNotification = {
   type: 'success' | 'error';
   createdAt: Date;
 };
+
+interface OrderDetails {
+  orderId: string;
+  size: string;
+  varieties: string[];
+  quantity: number;
+}
 
 export default function TrackingOrders() {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -228,6 +237,42 @@ export default function TrackingOrders() {
 
       // Check if it's a scheduled order
       const isScheduled = new Date(order.orderDetails.pickupDate) > new Date();
+
+      // If this is a new order, check stock availability first
+      if (!querySnapshot.docs.length) {
+        // Check stock availability
+        const stockIssues = await checkStockAvailability(order.items);
+        
+        // Create notifications for stock issues
+        if (stockIssues.length > 0) {
+          const notificationRef = collection(db, "notifications");
+          const notification = {
+            message: `Stock Issues Found for Order #${order.id.slice(0, 6)}:\n${stockIssues.join("\n")}`,
+            type: "error",
+            createdAt: new Date(),
+            read: false,
+            orderId: order.id
+          };
+          await addDoc(notificationRef, notification);
+
+          // Add to local notifications state
+          setNotifications(prev => [...prev, {
+            id: Math.random().toString(),
+            message: notification.message,
+            type: 'error',
+            createdAt: notification.createdAt
+          }]);
+
+          // Show toast notification
+          toast("Stock issues detected for new order. Check notifications for details.", {
+            style: {
+              background: '#fff7ed',
+              color: '#9a3412',
+              border: '1px solid #fdba74'
+            }
+          });
+        }
+      }
       
       // If it's a scheduled order and no tracking order exists, reserve the stock
       if (isScheduled && !querySnapshot.docs.length) {
@@ -332,14 +377,19 @@ export default function TrackingOrders() {
                 }
 
             const userDetails = await fetchUserDetails(data.userId);
-            return {
+                const order = {
               id: doc.id,
               ref: doc.ref,
               ...data,
               userDetails,
             } as Order;
-          })
-        );
+
+                // Save to tracking orders and check stock
+                await saveTrackingOrder(order);
+
+                return order;
+              })
+            );
 
             console.log("Processed orders:", orderList);
             setOrders(orderList);
@@ -366,6 +416,100 @@ export default function TrackingOrders() {
     };
   }, []);
 
+  // Function to check stock availability and create notifications
+  const checkStockAvailability = async (items: Array<{
+    productSize: string;
+    productVarieties: string[];
+    productQuantity: number;
+  }>) => {
+    const stockIssues: string[] = [];
+
+    try {
+        for (const item of items) {
+            // Check size stock
+            const sizeStocksRef = collection(db, "sizeStocks");
+            const sizeStockQuery = query(sizeStocksRef, where("size", "==", item.productSize));
+            const sizeStockSnapshot = await getDocs(sizeStockQuery);
+            
+            if (sizeStockSnapshot.empty) {
+                stockIssues.push(`Size stock not found for ${item.productSize}`);
+                continue;
+            }
+
+            const sizeStockDoc = sizeStockSnapshot.docs[0];
+            const sizeStock = sizeStockDoc.data();
+            
+            // Check if enough size stock is available
+            if (sizeStock.slices < item.productQuantity) {
+                stockIssues.push(`Insufficient ${item.productSize} stock. Available: ${sizeStock.slices}, Required: ${item.productQuantity}`);
+            }
+
+            // Check variety stocks
+            const sizeConfig = sizeConfigs.find(config => config.name === item.productSize);
+            if (!sizeConfig) {
+                stockIssues.push(`Size configuration not found for ${item.productSize}`);
+                continue;
+            }
+
+            const slicesPerVariety = Math.floor(sizeConfig.totalSlices / item.productVarieties.length);
+            const totalSlicesNeeded = slicesPerVariety * item.productQuantity;
+
+            // Check each variety's stock
+            for (const variety of item.productVarieties) {
+                const varietyStockRef = collection(db, "varietyStocks");
+                const varietySnapshot = await getDocs(varietyStockRef);
+                
+                // Find all matching variety stocks (case-insensitive)
+                const matchingDocs = varietySnapshot.docs.filter(doc => {
+                    const stockVariety = doc.data().variety;
+                    return stockVariety && stockVariety.toLowerCase() === variety.toLowerCase();
+                });
+
+                if (matchingDocs.length === 0) {
+                    stockIssues.push(`Variety stock not found for ${variety}`);
+                    continue;
+                }
+
+                // Calculate total available slices for this variety
+                const totalAvailableSlices = matchingDocs.reduce((sum, doc) => {
+                    const data = doc.data();
+                    return sum + (data.slices || 0);
+                }, 0);
+
+                if (totalAvailableSlices < totalSlicesNeeded) {
+                    stockIssues.push(`Insufficient stock for ${variety}. Available: ${totalAvailableSlices}, Required: ${totalSlicesNeeded}`);
+                }
+            }
+        }
+    } catch (error) {
+        console.error("Error checking stock availability:", error);
+        stockIssues.push("Error checking stock availability");
+    }
+
+    // Create notifications for stock issues
+    if (stockIssues.length > 0) {
+        const notificationRef = collection(db, "notifications");
+        const notification = {
+            title: "Stock Issues Detected",
+            message: stockIssues.join("\n"),
+            type: "error",
+            createdAt: new Date(),
+            read: false,
+            details: stockIssues,
+            priority: "high",
+            category: "stock"
+        };
+
+        // Add to Firestore
+        await addDoc(notificationRef, notification);
+
+        // Show toast notification
+        toast.error("Stock issues detected. Check notifications for details.");
+    }
+
+    return stockIssues;
+  };
+
   // Function to handle status updates
   const handleStatusUpdate = async (orderId: string, newStatus: OrderStatus) => {
     try {
@@ -385,152 +529,170 @@ export default function TrackingOrders() {
       const orderData = orderDoc.data();
       const currentStatus = orderData.orderDetails.status;
 
-      // Handle Stock Reserved status
-      if (newStatus === "Stock Reserved") {
-        try {
-          // Reserve stock for the order
-          const reservedStockIds = await reserveStock(
-            orderId,
-            orderData.items,
-            orderData.orderDetails.pickupDate,
-            orderData.orderDetails.pickupTime
-          );
-
-          // Update order with reserved stock IDs and new status
-          await updateDoc(orderRef, {
-            status: newStatus,
-            "orderDetails.status": newStatus,
-            "orderDetails.orderStatus": newStatus,
-            "orderDetails.reservedStockIds": reservedStockIds,
-            lastUpdated: new Date().toISOString(),
-            "orderDetails.updatedAt": new Date().toISOString()
-          });
-
-          // Update reserved stock status
-          await updateReservedStock(orderId, newStatus);
-        } catch (error) {
-          console.error("Error reserving stock:", error);
-          throw new Error("Failed to reserve stock. Please try again.");
+      // Skip stock checks for cancellations
+      if (newStatus !== "Cancelled") {
+        // Check stock availability before allowing status change
+        const stockIssues = await checkStockAvailability(orderData.items);
+        
+        // If there are stock issues, block the status change
+        if (stockIssues.length > 0) {
+          toast.error("Cannot update status: Insufficient stock available");
+          return;
         }
-      } else if (newStatus === "Ready for Pickup") {
-        // Process each item in the order
-        for (const item of orderData.items) {
-          // Get size stock
-          const sizeStocksRef = collection(db, "sizeStocks");
-          const sizeStockQuery = query(sizeStocksRef, where("size", "==", item.productSize));
-          const sizeStockSnapshot = await getDocs(sizeStockQuery);
-          
-          if (sizeStockSnapshot.empty) {
-            throw new Error(`Size stock not found for ${item.productSize}`);
-          }
+      }
 
-          const sizeStockDoc = sizeStockSnapshot.docs[0];
-          const sizeStock = sizeStockDoc.data();
-          
-          // Check if enough size stock is available
-          if (sizeStock.slices < item.productQuantity) {
-            throw new Error(`Insufficient ${item.productSize} stock. Available: ${sizeStock.slices}, Required: ${item.productQuantity}`);
-          }
-
-          // Get variety stocks and check availability
-          const varietyStocksPromises = item.productVarieties.map(async (variety: string) => {
-            const varietyStockRef = collection(db, "varietyStocks");
-            // Get all variety stocks and filter case-insensitively
-            const varietySnapshot = await getDocs(varietyStockRef);
+      // Handle different status updates
+        if (newStatus === "Ready for Pickup") {
+        try {
+          // Process each item in the order
+          for (const item of orderData.items) {
+            // Get size stock
+            const sizeStocksRef = collection(db, "sizeStocks");
+            const sizeStockQuery = query(sizeStocksRef, where("size", "==", item.productSize));
+            const sizeStockSnapshot = await getDocs(sizeStockQuery);
             
-            // Find the matching variety document case-insensitively
-            const matchingDoc = varietySnapshot.docs.find(
-              doc => doc.data().variety.toLowerCase() === variety.toLowerCase()
-            );
-            
-            if (!matchingDoc) {
-              throw new Error(`Variety stock not found for ${variety}`);
+            if (sizeStockSnapshot.empty) {
+              throw new Error(`Size stock not found for ${item.productSize}`);
             }
+
+            const sizeStockDoc = sizeStockSnapshot.docs[0];
+            const sizeStock = sizeStockDoc.data();
             
-                  return {
-              doc: matchingDoc,
-              data: matchingDoc.data()
-            };
-          });
-
-          const varietyStocks = await Promise.all(varietyStocksPromises);
-
-          // Calculate slices needed per variety
-          const sizeConfig = sizeConfigs.find(config => config.name === item.productSize);
-          if (!sizeConfig) {
-            throw new Error(`Size configuration not found for ${item.productSize}`);
-          }
-
-          const slicesPerVariety = Math.floor(sizeConfig.totalSlices / item.productVarieties.length);
-          const totalSlicesNeeded = slicesPerVariety * item.productQuantity;
-
-          // Check if enough variety stock is available
-          varietyStocks.forEach(({ data }) => {
-            if (data.slices < totalSlicesNeeded) {
-              throw new Error(`Insufficient slices for ${data.variety}. Available: ${data.slices}, Required: ${totalSlicesNeeded}`);
+            // Check if enough size stock is available
+            if (sizeStock.slices < item.productQuantity) {
+              throw new Error(`Insufficient ${item.productSize} stock. Available: ${sizeStock.slices}, Required: ${item.productQuantity}`);
             }
-          });
 
-          // Begin transaction
-          await runTransaction(db, async (transaction) => {
-            // Update size stock
-            const newSizeQuantity = sizeStock.slices - item.productQuantity;
-            transaction.update(sizeStockDoc.ref, {
-              slices: newSizeQuantity,
-              lastUpdated: new Date().toISOString()
+            // Get variety stocks and check availability
+            const varietyStocksPromises = item.productVarieties.map(async (variety: string) => {
+              const varietyStockRef = collection(db, "varietyStocks");
+              // Get all variety stocks
+              const varietySnapshot = await getDocs(varietyStockRef);
+              
+              // Find all matching variety stocks (case-insensitive)
+              const matchingDocs = varietySnapshot.docs.filter(doc => {
+                const stockVariety = doc.data().variety;
+                return stockVariety && stockVariety.toLowerCase() === variety.toLowerCase();
+              });
+
+              if (matchingDocs.length === 0) {
+                throw new Error(`Variety stock not found for ${variety}`);
+              }
+
+              return matchingDocs.map(doc => ({
+                doc,
+                data: doc.data()
+              }));
             });
 
-            // Record size stock history
-            const sizeHistoryRef = doc(collection(db, "stockHistory"));
-            transaction.set(sizeHistoryRef, {
-              stockId: sizeStockDoc.id,
-              size: item.productSize,
-              variety: '',
-              type: 'out',
-              slices: item.productQuantity,
-              previousSlices: sizeStock.slices,
-              newSlices: newSizeQuantity,
-              date: new Date(),
-              updatedBy: "Order System",
-              remarks: `Order pickup - Order ID: ${orderId} - Deducted ${item.productQuantity} ${item.productSize}`,
-              isDeleted: false
-            });
+            const varietyStocksArrays = await Promise.all(varietyStocksPromises);
+            const varietyStocks = varietyStocksArrays.flat();
 
-            // Update variety stocks
-            varietyStocks.forEach(({ doc: varietyDoc, data }) => {
-              const newVarietySlices = data.slices - totalSlicesNeeded;
-              transaction.update(varietyDoc.ref, {
-                slices: newVarietySlices,
+            // Calculate slices needed per variety
+            const sizeConfig = sizeConfigs.find(config => config.name === item.productSize);
+            if (!sizeConfig) {
+              throw new Error(`Size configuration not found for ${item.productSize}`);
+            }
+
+            const slicesPerVariety = Math.floor(sizeConfig.totalSlices / item.productVarieties.length);
+            const totalSlicesNeeded = slicesPerVariety * item.productQuantity;
+
+            // Check total available slices for each variety
+            for (const variety of item.productVarieties) {
+              const varietyDocs = varietyStocks.filter(vs => 
+                vs.data.variety?.toLowerCase() === variety.toLowerCase()
+              );
+              const totalAvailableSlices = varietyDocs.reduce((sum, { data }) => sum + (data.slices || 0), 0);
+              
+              if (totalAvailableSlices < totalSlicesNeeded) {
+                throw new Error(`Insufficient slices for ${variety}. Available: ${totalAvailableSlices}, Required: ${totalSlicesNeeded}`);
+              }
+            }
+
+            // Begin transaction
+            await runTransaction(db, async (transaction) => {
+              // Update size stock
+              const newSizeQuantity = sizeStock.slices - item.productQuantity;
+              transaction.update(sizeStockDoc.ref, {
+                slices: newSizeQuantity,
                 lastUpdated: new Date().toISOString()
               });
 
-              // Record variety stock history
-              const varietyHistoryRef = doc(collection(db, "stockHistory"));
-              transaction.set(varietyHistoryRef, {
-                stockId: varietyDoc.id,
+              // Record size stock history
+              const sizeHistoryRef = doc(collection(db, "stockHistory"));
+              transaction.set(sizeHistoryRef, {
+                stockId: sizeStockDoc.id,
                 size: item.productSize,
-                variety: data.variety,
+                variety: '',
                 type: 'out',
-                slices: totalSlicesNeeded,
-                previousSlices: data.slices,
-                newSlices: newVarietySlices,
+                slices: item.productQuantity,
+                previousSlices: sizeStock.slices,
+                newSlices: newSizeQuantity,
                 date: new Date(),
                 updatedBy: "Order System",
-                remarks: `Order pickup - Order ID: ${orderId} - Deducted ${totalSlicesNeeded} slices`,
+                remarks: `Order pickup - Order ID: ${orderId} - Deducted ${item.productQuantity} ${item.productSize}`,
                 isDeleted: false
               });
-            });
-          });
-        }
 
-        // Update order status after all items are processed
-        await updateDoc(orderRef, {
-          status: newStatus,
-          "orderDetails.status": newStatus,
-          "orderDetails.orderStatus": newStatus,
-          lastUpdated: new Date().toISOString(),
-          "orderDetails.updatedAt": new Date().toISOString()
-        });
+              // Update variety stocks starting from earliest production date
+              for (const variety of item.productVarieties) {
+                let remainingSlicesToDeduct = totalSlicesNeeded;
+                const varietyDocs = varietyStocks
+                  .filter(vs => vs.data.variety?.toLowerCase() === variety.toLowerCase())
+                  .sort((a, b) => new Date(a.data.productionDate).getTime() - new Date(b.data.productionDate).getTime());
+
+                for (const { doc: varietyDoc, data } of varietyDocs) {
+                  if (remainingSlicesToDeduct <= 0) break;
+
+                  const currentSlices = data.slices || 0;
+                  const slicesToDeduct = Math.min(remainingSlicesToDeduct, currentSlices);
+                  const newSlices = currentSlices - slicesToDeduct;
+
+                  transaction.update(varietyDoc.ref, {
+                    slices: newSlices,
+                    lastUpdated: new Date().toISOString()
+                  });
+
+                  // Record variety stock history
+                  const varietyHistoryRef = doc(collection(db, "stockHistory"));
+                  transaction.set(varietyHistoryRef, {
+                    stockId: varietyDoc.id,
+                    variety: data.variety,
+              type: 'out',
+                    slices: slicesToDeduct,
+                    previousSlices: currentSlices,
+                    newSlices: newSlices,
+              date: new Date(),
+              updatedBy: "Order System",
+                    remarks: `Order pickup - Order ID: ${orderId} - Deducted ${slicesToDeduct} slices from ${variety}`,
+                    isDeleted: false,
+                    productionDate: data.productionDate,
+                    expiryDate: data.expiryDate
+                  });
+
+                  remainingSlicesToDeduct -= slicesToDeduct;
+                }
+
+                // Verify all slices were deducted
+                if (remainingSlicesToDeduct > 0) {
+                  throw new Error(`Could not deduct all required slices for ${variety}`);
+                }
+              }
+
+              // Update order status only after successful stock deduction
+              transaction.update(orderRef, {
+                status: newStatus,
+                "orderDetails.status": newStatus,
+                "orderDetails.orderStatus": newStatus,
+                lastUpdated: new Date().toISOString(),
+                "orderDetails.updatedAt": new Date().toISOString()
+              });
+            });
+          }
+        } catch (error) {
+          console.error("Error processing order:", error);
+          throw error;
+        }
       } else if (newStatus === "Completed") {
         // For completed orders, update status and sales data
         await updateDoc(orderRef, {
@@ -549,6 +711,21 @@ export default function TrackingOrders() {
           await releaseReservedStock(orderId, newStatus);
         }
       } else if (newStatus === "Cancelled") {
+        // For cancelled orders, restore the stock if it was already deducted
+        if (currentStatus === "Ready for Pickup") {
+          // Handle each item in the order
+          for (const item of orderData.items) {
+            // Construct OrderDetails object for each item
+            const orderDetails: OrderDetails = {
+            orderId: orderId,
+              size: item.productSize,
+              varieties: item.productVarieties,
+              quantity: item.productQuantity
+            };
+            await restoreStockOnCancel(orderDetails);
+          }
+        }
+        
         // Release reserved stock if it was a scheduled order
         if (orderData.orderDetails.isScheduled) {
           await releaseReservedStock(orderId, newStatus);
