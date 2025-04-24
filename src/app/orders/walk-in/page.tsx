@@ -120,9 +120,9 @@ interface WalkInOrder {
   customerName: string;
   items: OrderItem[];
   totalAmount: number;
-  paymentMethod: string;
+    paymentMethod: string;
   gcashReference?: string | null;
-  createdAt: string;
+    createdAt: string;
   status: 'completed';
 }
 
@@ -209,7 +209,7 @@ export default function WalkInOrders() {
       const q = query(ordersRef, orderBy("createdAt", "desc"));
       const snapshot = await getDocs(q);
       const orders = snapshot.docs.map(doc => ({
-        id: doc.id,
+          id: doc.id,
         ...doc.data()
       })) as WalkInOrder[];
       setWalkInOrders(orders);
@@ -264,6 +264,7 @@ export default function WalkInOrders() {
       return;
     }
 
+    setLoading(true);
     try {
       const now = new Date();
       const orderRef = collection(db, "walkInOrders");
@@ -285,21 +286,9 @@ export default function WalkInOrders() {
         status: 'completed' as const
       };
 
+      // Create the order first
       const orderDoc = await addDoc(orderRef, newOrder);
-      setCurrentInvoice({ id: orderDoc.id, ...newOrder });
-      setShowInvoice(true);
-      setCurrentStep(3);
-      fetchWalkInOrders();
 
-    } catch (error) {
-      console.error("Error processing payment:", error);
-      alert("Error processing payment. Please try again.");
-    }
-  };
-
-  const handleCompleteOrder = async () => {
-    setLoading(true);
-    try {
       // Update inventory
       for (const product of selectedProducts) {
         const isFixedSize = product.size.toLowerCase() === 'small' || product.size.toLowerCase() === 'solo';
@@ -343,8 +332,29 @@ export default function WalkInOrders() {
         }
       }
 
-      // Update sales dashboard here
-      await updateSalesDashboard(currentOrderId); // Assuming this function exists
+      // Create sales record
+      const salesRef = collection(db, "sales");
+      const saleData = {
+        orderId: orderDoc.id,
+        orderType: "walk-in",
+        customerName: customerName.trim(),
+        amount: totalAmount,
+        date: now,
+        items: selectedProducts.map(item => ({
+          productSize: item.size,
+          productVariety: item.selectedVarieties.join(", "),
+          productQuantity: item.quantity,
+          productPrice: item.price
+        })),
+        paymentMethod,
+        status: "completed"
+      };
+      await addDoc(salesRef, saleData);
+
+      setCurrentInvoice({ id: orderDoc.id, ...newOrder });
+      setShowInvoice(true);
+      setCurrentStep(3);
+      fetchWalkInOrders();
 
       // Reset form
       setSelectedProducts([]);
@@ -353,13 +363,10 @@ export default function WalkInOrders() {
       setPaymentMethod("Cash");
       setGcashReference("");
       setCurrentOrderId("");
-      setShowInvoice(false);
-      setCurrentInvoice(null);
-      setCurrentStep(1);
 
     } catch (error) {
-      console.error("Error updating inventory:", error);
-      alert("Error updating inventory. Please check stock levels.");
+      console.error("Error processing order:", error);
+      alert("Error processing order. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -390,18 +397,18 @@ export default function WalkInOrders() {
   const handleQuantityChange = (index: number, newQuantity: number) => {
     if (newQuantity < 1) return;
     
-    const updatedProducts = [...selectedProducts];
+      const updatedProducts = [...selectedProducts];
     const product = updatedProducts[index];
-    const oldTotal = product.price * product.quantity;
-    const newTotal = product.price * newQuantity;
-    
-    updatedProducts[index] = {
-      ...product,
-      quantity: newQuantity
-    };
-    
-    setSelectedProducts(updatedProducts);
-    setTotalAmount(prev => prev - oldTotal + newTotal);
+      const oldTotal = product.price * product.quantity;
+      const newTotal = product.price * newQuantity;
+      
+      updatedProducts[index] = {
+        ...product,
+        quantity: newQuantity
+      };
+      
+      setSelectedProducts(updatedProducts);
+      setTotalAmount(prev => prev - oldTotal + newTotal);
   };
 
   const handleVarietyChange = (index: number, selectedOptions: string[]) => {
@@ -570,15 +577,15 @@ export default function WalkInOrders() {
             <>
               {/* Step 1: Create Order */}
               {currentStep === 1 && (
-                <div className="bg-white p-6 rounded-lg shadow-md mb-6">
-                  <h2 className="text-xl font-semibold mb-4">Create New Order</h2>
+          <div className="bg-white p-6 rounded-lg shadow-md mb-6">
+            <h2 className="text-xl font-semibold mb-4">Create New Order</h2>
                   
                   {/* Customer Information */}
                   <div className="mb-6">
-                    <label className="block text-sm font-medium text-gray-700">Customer Name</label>
-                    <input
-                      type="text"
-                      value={customerName}
+                <label className="block text-sm font-medium text-gray-700">Customer Name</label>
+                <input
+                  type="text"
+                  value={customerName}
                       onChange={(e) => {
                         const value = e.target.value;
                         if (value === '' || /^[A-Za-z\s\-'.]+$/.test(value)) {
@@ -587,9 +594,9 @@ export default function WalkInOrders() {
                       }}
                       className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                       placeholder="Enter customer name"
-                      required
-                    />
-                  </div>
+                  required
+                />
+              </div>
 
                   {/* Product Selection Grid */}
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
@@ -605,33 +612,33 @@ export default function WalkInOrders() {
                           Varieties: {size.minVarieties}-{size.maxVarieties}
                         </p>
                         <p className="mt-2 text-lg font-semibold text-blue-600">₱{size.price.toLocaleString()}</p>
-                      </div>
-                    ))}
-                  </div>
+                              </div>
+                            ))}
+              </div>
 
                   {/* Selected Products */}
                   <div className="space-y-4">
-                    {selectedProducts.map((product, index) => (
+                  {selectedProducts.map((product, index) => (
                       <div key={index} className="border rounded-lg p-4">
-                        <div className="flex justify-between items-start mb-3">
-                          <div>
-                            <h4 className="font-medium">{product.size}</h4>
+                      <div className="flex justify-between items-start mb-3">
+                        <div>
+                          <h4 className="font-medium">{product.size}</h4>
                             <p className="text-sm text-gray-600">₱{product.price.toLocaleString()}</p>
-                          </div>
-                          <button
-                            onClick={() => handleRemoveProduct(index)}
-                            className="text-red-500 hover:text-red-700"
-                          >
-                            Remove
-                          </button>
                         </div>
-
-                        <div className="grid grid-cols-2 gap-4">
+                        <button
+                          onClick={() => handleRemoveProduct(index)}
+                          className="text-red-500 hover:text-red-700"
+                        >
+                            Remove
+                        </button>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
                           {/* Variety Selection */}
-                          <div>
+                        <div>
                             <label className="block text-sm font-medium text-gray-700 mb-2">
                               Select Varieties
-                            </label>
+                          </label>
                             <div className="space-y-2">
                               {product.varieties.map((variety) => (
                                 <label key={variety} className="flex items-center">
@@ -650,55 +657,55 @@ export default function WalkInOrders() {
                                 </label>
                               ))}
                             </div>
-                          </div>
-
+                        </div>
+                        
                           {/* Quantity Selection */}
-                          <div>
+                        <div>
                             <label className="block text-sm font-medium text-gray-700 mb-2">
                               Quantity
                             </label>
                             <div className="flex items-center space-x-2">
-                              <button
-                                onClick={() => handleQuantityChange(index, product.quantity - 1)}
+                            <button
+                              onClick={() => handleQuantityChange(index, product.quantity - 1)}
                                 className="px-3 py-1 border rounded-md"
-                              >
-                                -
-                              </button>
-                              <input
-                                type="number"
-                                value={product.quantity}
+                            >
+                              -
+                            </button>
+                            <input
+                              type="number"
+                              value={product.quantity}
                                 onChange={(e) => handleQuantityChange(index, parseInt(e.target.value) || 1)}
-                                min="1"
+                              min="1"
                                 className="w-20 text-center border rounded-md"
-                              />
-                              <button
-                                onClick={() => handleQuantityChange(index, product.quantity + 1)}
+                            />
+                            <button
+                              onClick={() => handleQuantityChange(index, product.quantity + 1)}
                                 className="px-3 py-1 border rounded-md"
-                              >
-                                +
-                              </button>
+                            >
+                              +
+                            </button>
                             </div>
-                          </div>
-                        </div>
-
-                        <div className="mt-2 text-right">
-                          Subtotal: ₱{(product.price * product.quantity).toLocaleString()}
                         </div>
                       </div>
-                    ))}
-                  </div>
+                      
+                        <div className="mt-2 text-right">
+                        Subtotal: ₱{(product.price * product.quantity).toLocaleString()}
+                      </div>
+                    </div>
+                  ))}
+              </div>
 
                   <div className="mt-6">
                     <div className="text-xl font-semibold mb-4">
-                      Total Amount: ₱{totalAmount.toLocaleString()}
-                    </div>
-                    <button
+                Total Amount: ₱{totalAmount.toLocaleString()}
+              </div>
+              <button
                       onClick={handleCreateOrder}
-                      disabled={loading || selectedProducts.length === 0}
+                disabled={loading || selectedProducts.length === 0}
                       className="w-full py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
-                    >
+              >
                       Create Order
-                    </button>
+              </button>
                   </div>
                 </div>
               )}
@@ -723,7 +730,7 @@ export default function WalkInOrders() {
                         <option value="Cash">Cash</option>
                         <option value="GCash">GCash</option>
                       </select>
-                    </div>
+          </div>
 
                     {paymentMethod === "GCash" && (
                       <div>
@@ -781,9 +788,9 @@ export default function WalkInOrders() {
                         {order.items.map((item, index) => (
                           <div key={index} className="mb-1">
                             {item.productSize} - {item.productQuantity}x
-                            <span className="text-gray-400 text-xs ml-1">
-                              ({item.productVarieties.join(", ")})
-                            </span>
+                              <span className="text-gray-400 text-xs ml-1">
+                                ({item.productVarieties.join(", ")})
+                              </span>
                           </div>
                         ))}
                       </td>

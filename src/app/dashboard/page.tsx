@@ -108,8 +108,8 @@ interface OrderData {
     isWalkin: boolean;
   };
   userDetails?: {
-  firstName: string;
-  lastName: string;
+    firstName: string;
+    lastName: string;
   };
   customerDetails?: {
     name: string;
@@ -133,7 +133,7 @@ interface SalesReportData {
   totalSales: number;
   totalTransactions: number;
   transactions: {
-    id: string;
+  id: string;
     customerName: string;
     amount: number;
     date: Date;
@@ -152,6 +152,11 @@ export default function Dashboard() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [orderAlerts, setOrderAlerts] = useState({
+    scheduled: 0,
+    online: 0,
+    total: 0
+  });
   const [salesChartData, setSalesChartData] = useState<ChartData>({
     labels: [],
     datasets: [{
@@ -207,6 +212,7 @@ export default function Dashboard() {
         fetchLowStockItems(),
         fetchInventoryMetrics(),
         fetchStockList(),
+        fetchOrderAlerts(),
         checkNewOrders()
       ]);
     } catch (error) {
@@ -514,10 +520,10 @@ export default function Dashboard() {
         } 
         // For registered users
         else {
-          if (data.userDetails?.firstName && data.userDetails?.lastName) {
+        if (data.userDetails?.firstName && data.userDetails?.lastName) {
             customerName = `${data.userDetails.firstName} ${data.userDetails.lastName}`.trim();
-          } else if (data.customerDetails?.name) {
-            customerName = data.customerDetails.name;
+        } else if (data.customerDetails?.name) {
+          customerName = data.customerDetails.name;
           } else if (data.orderDetails.customerName) {
             customerName = data.orderDetails.customerName;
           } else {
@@ -670,7 +676,7 @@ export default function Dashboard() {
       const fixedStocksRef = collection(db, "fixedSizeStocks");
       const fixedSnapshot = await getDocs(fixedStocksRef);
       const fixedStocks = fixedSnapshot.docs.map(doc => ({
-        id: doc.id,
+            id: doc.id,
         ...doc.data()
       })) as Stock[];
 
@@ -687,6 +693,51 @@ export default function Dashboard() {
     }
   };
 
+  const fetchOrderAlerts = async () => {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      // Fetch online orders (pending and processing) excluding cash payments
+      const onlineOrdersRef = collection(db, "orders");
+      const onlineQuery = query(
+        onlineOrdersRef,
+        where("orderDetails.status", "in", ["Pending", "Processing"]),
+        where("orderDetails.orderType", "==", "online"),
+        where("orderDetails.paymentMethod", "!=", "Cash") // Exclude cash payments
+      );
+      const onlineSnapshot = await getDocs(onlineQuery);
+
+      // Fetch scheduled orders for tomorrow
+      const scheduledOrdersRef = collection(db, "orders");
+      const scheduledQuery = query(
+        scheduledOrdersRef,
+        where("orderDetails.status", "in", ["Pending", "Processing"]),
+        where("orderDetails.orderType", "==", "scheduled"),
+        where("orderDetails.pickupDate", ">=", tomorrow.toISOString()),
+        where("orderDetails.pickupDate", "<", new Date(tomorrow.getTime() + 24 * 60 * 60 * 1000).toISOString())
+      );
+      const scheduledSnapshot = await getDocs(scheduledQuery);
+
+      setOrderAlerts({
+        scheduled: scheduledSnapshot.size,
+        online: onlineSnapshot.size,
+        total: scheduledSnapshot.size + onlineSnapshot.size
+      });
+
+    } catch (error) {
+      console.error("Error fetching order alerts:", error);
+      setNotifications(prev => [...prev, {
+        id: `error-${Date.now()}`,
+        message: "Failed to fetch order alerts",
+        type: 'error',
+        createdAt: new Date()
+      }]);
+    }
+  };
+
   const checkNewOrders = async () => {
     try {
       const ordersRef = collection(db, "orders");
@@ -694,6 +745,7 @@ export default function Dashboard() {
         ordersRef,
         where("orderDetails.status", "==", "Pending Verification"),
         where("orderDetails.paymentStatus", "==", "pending"),
+        where("orderDetails.paymentMethod", "!=", "Cash"), // Exclude cash payments from verification
         orderBy("orderDetails.createdAt", "desc")
       );
       
@@ -1044,12 +1096,12 @@ export default function Dashboard() {
     <ProtectedRoute>
       <div className="flex min-h-screen bg-gray-50">
         <div className="flex-1 p-6">
-            {/* Header with Notifications */}
+          {/* Header with Notifications */}
           <div className="flex justify-between items-center mb-8">
-              <div>
+            <div>
               <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
               <p className="text-sm text-gray-600 mt-1">Welcome back! Here's your business overview</p>
-        </div>
+            </div>
 
             <div className="flex items-center gap-4">
               <div className="relative">
@@ -1061,11 +1113,11 @@ export default function Dashboard() {
                     <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/>
                     <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>
                   </svg>
-            {notifications.length > 0 && (
+                  {notifications.length > 0 && (
                     <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
-                {notifications.length}
-              </span>
-            )}
+                      {notifications.length}
+                    </span>
+                  )}
                 </button>
               </div>
               <button
@@ -1073,52 +1125,52 @@ export default function Dashboard() {
                 className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
               >
                 Logout
-          </button>
-              </div>
+              </button>
             </div>
+          </div>
 
-            {/* Quick Stats Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+          {/* Summary Cards */}
+          <div className="grid grid-cols-5 gap-4 mb-8">
             <div 
-              className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow cursor-pointer"
+              className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow cursor-pointer"
               onClick={() => generateSalesReport('daily')}
             >
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-medium text-gray-500">Daily Sales</h3>
                 <span className="p-2 bg-blue-50 text-blue-600 rounded-lg">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
                     <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
                   </svg>
                 </span>
               </div>
-              <p className="text-2xl font-semibold text-gray-900">₱{salesData.daily.toLocaleString()}</p>
-              </div>
+              <p className="text-xl font-semibold text-gray-900">₱{salesData.daily.toLocaleString()}</p>
+            </div>
 
             <div 
-              className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow cursor-pointer"
+              className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow cursor-pointer"
               onClick={() => generateSalesReport('weekly')}
             >
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-medium text-gray-500">Weekly Sales</h3>
                 <span className="p-2 bg-green-50 text-green-600 rounded-lg">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M3 3v18h18"/>
                     <path d="m19 9-5 5-4-4-3 3"/>
                   </svg>
                 </span>
               </div>
-              <p className="text-2xl font-semibold text-gray-900">₱{salesData.weekly.toLocaleString()}</p>
+              <p className="text-xl font-semibold text-gray-900">₱{salesData.weekly.toLocaleString()}</p>
             </div>
 
             <div 
-              className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow cursor-pointer"
+              className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow cursor-pointer"
               onClick={() => generateSalesReport('monthly')}
             >
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-medium text-gray-500">Monthly Sales</h3>
                 <span className="p-2 bg-purple-50 text-purple-600 rounded-lg">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
                     <line x1="16" y1="2" x2="16" y2="6"/>
                     <line x1="8" y1="2" x2="8" y2="6"/>
@@ -1126,38 +1178,64 @@ export default function Dashboard() {
                   </svg>
                 </span>
               </div>
-              <p className="text-2xl font-semibold text-gray-900">₱{salesData.monthly.toLocaleString()}</p>
+              <p className="text-xl font-semibold text-gray-900">₱{salesData.monthly.toLocaleString()}</p>
               <p className="text-xs text-gray-500 mt-1">Last month</p>
             </div>
 
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
-              <div className="flex items-center justify-between mb-4">
+            <div 
+              className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow cursor-pointer"
+              onClick={() => router.push('/orders/tracking-orders')}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-medium text-gray-500">Order Alerts</h3>
+                <span className="p-2 bg-orange-50 text-orange-600 rounded-lg">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/>
+                    <line x1="3" y1="6" x2="21" y2="6"/>
+                    <path d="M16 10a4 4 0 0 1-8 0"/>
+                  </svg>
+                </span>
+              </div>
+              <p className="text-xl font-semibold text-gray-900">{orderAlerts.total}</p>
+              <div className="flex gap-2 mt-1">
+                <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
+                  {orderAlerts.scheduled} Tomorrow
+                </span>
+                <span className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full">
+                  {orderAlerts.online} Online
+                </span>
+              </div>
+            </div>
+
+            <div 
+              className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow cursor-pointer"
+              onClick={() => router.push('/inventory/stock-management')}
+            >
+              <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-medium text-gray-500">Stock Alerts</h3>
                 <span className="p-2 bg-red-50 text-red-600 rounded-lg">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
                     <line x1="12" y1="9" x2="12" y2="13"/>
                     <line x1="12" y1="17" x2="12.01" y2="17"/>
                   </svg>
                 </span>
               </div>
-              <p className="text-2xl font-semibold text-gray-900">
-                {lowStockItems.length}
-              </p>
+              <p className="text-xl font-semibold text-gray-900">{lowStockItems.length}</p>
               <div className="flex gap-2 mt-1">
                 <span className="text-xs px-2 py-1 bg-red-100 text-red-700 rounded-full">
                   {lowStockItems.filter(item => item.severity === 'critical').length} Critical
                 </span>
                 <span className="text-xs px-2 py-1 bg-yellow-100 text-yellow-700 rounded-full">
-                  {lowStockItems.filter(item => item.severity === 'low').length} Low Stock
+                  {lowStockItems.filter(item => item.severity === 'low').length} Low
                 </span>
               </div>
-              </div>
             </div>
+          </div>
 
-            {/* Charts Section */}
+          {/* Charts Section */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-              {/* Sales Trend Chart */}
+            {/* Sales Trend Chart */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-base font-semibold text-gray-900">Sales Trend</h3>
@@ -1167,7 +1245,7 @@ export default function Dashboard() {
                   <option>Last 90 days</option>
                 </select>
               </div>
-                <div className="h-[300px]">
+              <div className="h-[300px]">
                 <Line options={{
                   ...chartOptions,
                   scales: {
@@ -1184,10 +1262,10 @@ export default function Dashboard() {
                     }
                   }
                 }} data={salesChartData} />
-                </div>
               </div>
+            </div>
 
-              {/* Popular Products Chart */}
+            {/* Popular Products Chart */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-base font-semibold text-gray-900">Popular Products</h3>
@@ -1203,7 +1281,7 @@ export default function Dashboard() {
                   <option value="revenue">By Revenue</option>
                 </select>
               </div>
-                <div className="h-[300px]">
+              <div className="h-[300px]">
                 <Bar options={{
                   ...chartOptions,
                   scales: {
@@ -1228,9 +1306,9 @@ export default function Dashboard() {
                     }
                   }
                 }} data={productChartData} />
-                </div>
               </div>
             </div>
+          </div>
 
           {/* Orders and Stock Alerts Section */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
@@ -1239,15 +1317,15 @@ export default function Dashboard() {
               <div className="p-6 border-b border-gray-100">
                 <div className="flex items-center justify-between">
                   <h3 className="text-base font-semibold text-gray-900">Orders</h3>
-                  <button 
+                  <button
                     onClick={() => router.push('/orders/tracking-orders')}
                     className="text-sm text-blue-600 hover:text-blue-700"
                   >
                     View All
                   </button>
                 </div>
-                </div>
-                <div className="overflow-x-auto">
+              </div>
+              <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
@@ -1266,10 +1344,10 @@ export default function Dashboard() {
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Date
                       </th>
-                      </tr>
-                    </thead>
+                    </tr>
+                  </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                      {recentOrders.map((order) => (
+                    {recentOrders.map((order) => (
                       <tr key={order.id} className="hover:bg-gray-50">
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                           #{order.id.slice(0, 6)}
@@ -1285,19 +1363,19 @@ export default function Dashboard() {
                             order.status === 'Completed' ? 'bg-green-100 text-green-800' :
                             order.status === 'Cancelled' ? 'bg-red-100 text-red-800' :
                             'bg-yellow-100 text-yellow-800'
-                            }`}>
-                              {order.status}
-                            </span>
-                          </td>
+                          }`}>
+                            {order.status}
+                          </span>
+                        </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                           {order.date.toLocaleDateString()}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+            </div>
 
             {/* Stock Alerts */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
@@ -1309,7 +1387,7 @@ export default function Dashboard() {
                       {lowStockItems.filter(item => item.severity === 'critical').length} Critical
                     </span>
                     <span className="px-2 py-1 text-xs font-medium bg-yellow-100 text-yellow-800 rounded-full">
-                      {lowStockItems.filter(item => item.severity === 'low').length} Low Stock
+                      {lowStockItems.filter(item => item.severity === 'low').length} Low
                     </span>
                   </div>
                 </div>
@@ -1338,7 +1416,7 @@ export default function Dashboard() {
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="text-sm font-medium text-gray-900">
                             {item.type === 'variety' ? 'Variety' : 'Size'}
-                          </div>
+                            </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="text-sm font-medium text-gray-900">
@@ -1373,13 +1451,13 @@ export default function Dashboard() {
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-semibold text-gray-900">Stock List</h3>
                 <div className="flex gap-2">
-                  <button 
-                    onClick={() => router.push('/inventory/stock-management')}
-                    className="text-sm text-blue-600 hover:text-blue-700"
-                  >
-                    View All
-                  </button>
-                </div>
+                <button
+                  onClick={() => router.push('/inventory/stock-management')}
+                  className="text-sm text-blue-600 hover:text-blue-700"
+                >
+                  View All
+                </button>
+              </div>
               </div>
             </div>
             
@@ -1387,14 +1465,14 @@ export default function Dashboard() {
             <div className="mb-4">
               <div className="px-6 py-3 bg-gray-50">
                 <h4 className="text-sm font-semibold text-gray-700">Fixed Sizes</h4>
-                </div>
-                <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/3">
-                        Size
-                      </th>
+                      Size
+                    </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/3">
                         Stock Level
                       </th>
@@ -1443,46 +1521,46 @@ export default function Dashboard() {
                   <thead className="bg-gray-50">
                     <tr>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/3">
-                        Variety
-                      </th>
+                      Variety
+                    </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/3">
                         Stock Level (Bilao)
-                      </th>
+                    </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/3">
-                        Status
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
+                      Status
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
                     {stockList.filter(item => item.type === 'variety').map((stock) => (
-                      <tr key={stock.id} className="hover:bg-gray-50">
+                    <tr key={stock.id} className="hover:bg-gray-50">
                         <td className="px-6 py-4 whitespace-nowrap w-1/3">
-                          <div className="text-sm font-medium text-gray-900">
+                        <div className="text-sm font-medium text-gray-900">
                             {stock.variety}
-                          </div>
-                        </td>
+                        </div>
+                      </td>
                         <td className="px-6 py-4 whitespace-nowrap w-1/3">
-                          <div className="text-sm text-gray-900">
+                        <div className="text-sm text-gray-900">
                             {stock.bilao}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`px-2 py-1 text-xs font-medium rounded-full ${
                             stock.bilao <= stock.criticalLevel ? 'bg-red-100 text-red-800' :
                             stock.bilao <= stock.minimumStock ? 'bg-yellow-100 text-yellow-800' :
-                            'bg-green-100 text-green-800'
-                          }`}>
+                          'bg-green-100 text-green-800'
+                        }`}>
                             {stock.bilao <= stock.criticalLevel ? 'Critical' : 
                              stock.bilao <= stock.minimumStock ? 'Low Stock' : 'In Stock'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
               </div>
             </div>
-            </div>
+          </div>
         </div>
 
         {/* Notification Panel */}
@@ -1496,8 +1574,8 @@ export default function Dashboard() {
                   {notifications.filter(n => !n.isOrderNotification).length} Alerts
                 </span>
               </div>
-              </div>
-              <div className="max-h-96 overflow-y-auto">
+            </div>
+            <div className="max-h-96 overflow-y-auto">
               {notifications.length > 0 ? (
                 <div>
                   {/* Order Notifications */}
@@ -1531,14 +1609,14 @@ export default function Dashboard() {
                   {notifications
                     .filter(n => !n.isOrderNotification)
                     .map((notification, index) => (
-                      <div 
-                        key={index}
-                        className={`p-4 border-b border-gray-100 ${
-                    notification.type === 'error' ? 'bg-red-50' :
-                    notification.type === 'warning' ? 'bg-yellow-50' :
-                    'bg-green-50'
-                        }`}
-                      >
+                  <div 
+                    key={index} 
+                    className={`p-4 border-b border-gray-100 ${
+                      notification.type === 'error' ? 'bg-red-50' :
+                      notification.type === 'warning' ? 'bg-yellow-50' :
+                      'bg-green-50'
+                    }`}
+                  >
                     <p className={`text-sm ${
                       notification.type === 'error' ? 'text-red-800' :
                       notification.type === 'warning' ? 'text-yellow-800' :
@@ -1556,12 +1634,12 @@ export default function Dashboard() {
               )}
             </div>
             <div className="p-4 border-t border-gray-100">
-                <button
-                  onClick={() => setShowNotifications(false)}
+              <button
+                onClick={() => setShowNotifications(false)}
                 className="w-full px-4 py-2 text-sm text-gray-600 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors"
-                >
-                  Close
-                </button>
+              >
+                Close
+              </button>
               </div>
             </div>
           )}

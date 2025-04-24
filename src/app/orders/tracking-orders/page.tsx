@@ -534,12 +534,12 @@ export default function TrackingOrders() {
         orderElement.classList.add('opacity-50');
       }
 
-        const orderRef = doc(db, "orders", orderId);
+      const orderRef = doc(db, "orders", orderId);
       const orderDoc = await getDoc(orderRef);
-        
-        if (!orderDoc.exists()) {
-          throw new Error("Order not found");
-        }
+
+      if (!orderDoc.exists()) {
+        throw new Error("Order not found");
+      }
 
       const orderData = orderDoc.data();
       const currentStatus = orderData.orderDetails.status;
@@ -607,7 +607,7 @@ export default function TrackingOrders() {
               const totalBilaoNeeded = deductionAmount * item.productQuantity;
 
               // Check each variety's stock
-              for (const variety of item.productVarieties) {
+            for (const variety of item.productVarieties) {
                 const varietyStockRef = collection(db, "varietyStocks");
                 const varietyQuery = query(
                   varietyStockRef,
@@ -623,7 +623,7 @@ export default function TrackingOrders() {
 
                 // Calculate total available bilao for this variety
                 const totalAvailableBilao = varietySnapshot.docs.reduce((sum, doc) => {
-                  const data = doc.data();
+                const data = doc.data();
                   return sum + (data.bilao || 0);
                 }, 0);
 
@@ -725,8 +725,8 @@ export default function TrackingOrders() {
                     const stockRef = stockDoc.ref;
                     transaction.update(stockRef, {
                       bilao: newBilao,
-                      lastUpdated: new Date().toISOString()
-                    });
+              lastUpdated: new Date().toISOString()
+            });
 
                     // Record stock history with more detailed remarks
                     const historyCollectionRef = collection(db, "stockHistory");
@@ -734,7 +734,7 @@ export default function TrackingOrders() {
                     transaction.set(newHistoryDocRef, {
                       stockId: stockDoc.id,
                       variety: variety,
-                      type: "out",
+              type: "out",
                       bilao: deductAmount,
                       previousBilao: currentBilao,
                       newBilao: newBilao,
@@ -748,13 +748,13 @@ export default function TrackingOrders() {
 
                     remainingToDeduct -= deductAmount;
                   }
-                }
-              }
+          }
+        }
 
-              // Update order status
-              transaction.update(orderRef, {
+        // Update order status
+        transaction.update(orderRef, {
                 status: newStatus,
-                "orderDetails.status": newStatus,
+          "orderDetails.status": newStatus,
                 "orderDetails.orderStatus": newStatus,
                 lastUpdated: new Date().toISOString(),
                 "orderDetails.updatedAt": new Date().toISOString()
@@ -807,16 +807,16 @@ export default function TrackingOrders() {
           status: newStatus,
           "orderDetails.status": newStatus,
           "orderDetails.orderStatus": newStatus,
-          lastUpdated: new Date().toISOString(),
+              lastUpdated: new Date().toISOString(),
           "orderDetails.updatedAt": new Date().toISOString()
-        });
-      } else {
+            });
+          } else {
         // For other status changes
         await updateDoc(orderRef, {
           status: newStatus,
           "orderDetails.status": newStatus,
           "orderDetails.orderStatus": newStatus,
-          lastUpdated: new Date().toISOString(),
+              lastUpdated: new Date().toISOString(),
           "orderDetails.updatedAt": new Date().toISOString()
         });
 

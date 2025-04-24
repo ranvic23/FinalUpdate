@@ -88,6 +88,14 @@ interface OrderDetails {
     size: string;
 }
 
+interface DeductStockParams {
+    orderId: string;
+    size: string;
+    varieties: string[];
+    quantity: number;
+    isFixedSize?: boolean;
+}
+
 // Move the function outside and before the Stock component
 export const restoreStockOnCancel = async (orderDetails: OrderDetails) => {
     try {
@@ -203,19 +211,19 @@ export const updateStockOnOrderStatus = async (orderDetails: OrderDetails) => {
 
                 await updateDoc(varietyDoc.ref, {
                     bilao: newBilao,
-                    lastUpdated: new Date().toISOString()
+                lastUpdated: new Date().toISOString()
                 });
 
                 // Record variety stock history
                 await addDoc(collection(db, "stockHistory"), {
                     stockId: varietyDoc.id,
                     variety: variety,
-                    type: 'out',
+                type: 'out',
                     bilao: bilaoToDeduct,
                     previousBilao: currentBilao,
                     newBilao: newBilao,
-                    date: new Date(),
-                    updatedBy: "Order System",
+                date: new Date(),
+                updatedBy: "Order System",
                     remarks: `Order pickup - Order ID: ${orderDetails.orderId} - Deducted ${bilaoToDeduct} bilao`,
                     isDeleted: false,
                     productionDate: varietyStock.productionDate,
@@ -249,175 +257,113 @@ const formatDate = (dateStr: string | undefined): string => {
     }
 };
 
-type BilaoSize = 'big bilao' | '1/4' | 'half tray' | 'tray';
+type BilaoSize = 'big bilao' | '1/4' | '1/4 slice' | 'half tray' | 'tray';
 
 const BILAO_DEDUCTION: Record<BilaoSize, number> = {
-    'big bilao': 0.25,  // 1/4 per variety
-    '1/4': 0.25,       // 1/4 per variety
-    'half tray': 0.25, // 1/4 per variety (same as big bilao)
-    'tray': 0.25,      // 1/4 per variety (same as big bilao)
+    'big bilao': 0.25,    // 1/4 per variety
+    '1/4': 0.25,         // 1/4 per variety
+    '1/4 slice': 0.25,   // 1/4 per variety
+    'half tray': 0.25,   // 1/4 per variety
+    'tray': 0.25,        // 1/4 per variety
 };
 
-export const deductStockOnOrder = async (orderDetails: {
-        orderId: string;
-    size: string;
-        varieties: string[];
-        quantity: number;
-    isFixedSize?: boolean;
-}) => {
+export async function deductStockOnOrder({ orderId, size, varieties, quantity, isFixedSize }: DeductStockParams) {
     try {
-        const { orderId, size, varieties, quantity, isFixedSize } = orderDetails;
-
+        // For fixed size products (Small, Solo), deduct directly from variety stock
         if (isFixedSize) {
-            // Handle fixed size (small/solo) deductions
             for (const variety of varieties) {
-                if (variety !== 'Bibingka') continue; // Only process Bibingka for fixed sizes
+                const varietyStockRef = collection(db, "varietyStocks");
+                const q = query(varietyStockRef, where("variety", "==", variety));
+                const snapshot = await getDocs(q);
 
-                const fixedStocksRef = collection(db, "fixedSizeStocks");
-                const fixedQuery = query(
-                    fixedStocksRef,
-                    where("variety", "==", "Bibingka"),
-                    where("size", "==", size.toLowerCase()),
-                    orderBy("productionDate", "asc")
-                );
-                
-                const fixedSnapshot = await getDocs(fixedQuery);
-                const fixedStocks = fixedSnapshot.docs;
-
-                if (fixedStocks.length === 0) {
-                    throw new Error(`No stock found for ${size} Bibingka`);
-                }
-
-                // Calculate total available quantity
-                const totalAvailable = fixedStocks.reduce((sum, doc) => 
-                    sum + ((doc.data() as Stock).quantity || 0), 0);
-
-                if (totalAvailable < quantity) {
-                    throw new Error(`Insufficient stock for ${size} Bibingka. Available: ${totalAvailable}, Needed: ${quantity}`);
-                }
-
-                let remainingToDeduct = quantity;
-
-                // Deduct from stocks starting with earliest production date
-                for (const stockDoc of fixedStocks) {
-                    if (remainingToDeduct <= 0) break;
-
-                    const stockData = stockDoc.data() as Stock;
-                    const currentQuantity = stockData.quantity || 0;
-                    const deductAmount = Math.min(remainingToDeduct, currentQuantity);
-                    const newQuantity = currentQuantity - deductAmount;
-
-                    await updateDoc(stockDoc.ref, {
-                        quantity: newQuantity,
-                        lastUpdated: new Date().toISOString()
-                    });
-
-                    // Record stock history
-                    await addDoc(collection(db, "stockHistory"), {
-                        stockId: stockDoc.id,
-                        variety: "Bibingka",
-                        type: "out",
-                        bilao: 0,
-                        previousBilao: 0,
-                        newBilao: 0,
-                        size: size.toLowerCase() as 'small' | 'solo',
-                        quantity: deductAmount,
-                        previousQuantity: currentQuantity,
-                        newQuantity: newQuantity,
-                        date: new Date(),
-                        updatedBy: "Order System",
-                        remarks: `Order deduction - Order ID: ${orderId} - Deducted ${deductAmount} pieces`,
-                        isDeleted: false,
-                        productionDate: stockData.productionDate,
-                        expiryDate: stockData.expiryDate
-                    });
-
-                    remainingToDeduct -= deductAmount;
-                }
-            }
-        } else {
-            // Handle bilao-based deductions
-            const sizeKey = size.toLowerCase() as BilaoSize;
-            if (!(sizeKey in BILAO_DEDUCTION)) {
-                throw new Error(`Invalid size: ${size}`);
-            }
-            const deductionAmount = BILAO_DEDUCTION[sizeKey] * quantity;
-
-            for (const variety of varieties) {
-                const varietyStocksRef = collection(db, "varietyStocks");
-                const varietyQuery = query(
-                    varietyStocksRef,
-                    where("variety", "==", variety),
-                    orderBy("productionDate", "asc")
-                );
-                
-                const varietySnapshot = await getDocs(varietyQuery);
-                const varietyStocks = varietySnapshot.docs;
-
-                if (varietyStocks.length === 0) {
+                if (snapshot.empty) {
                     throw new Error(`No stock found for variety: ${variety}`);
                 }
 
-                // Calculate total available bilao
-                const totalAvailable = varietyStocks.reduce((sum, doc) => 
-                    sum + ((doc.data() as Stock).bilao || 0), 0);
+                const stockDoc = snapshot.docs[0];
+                const currentStock = stockDoc.data().quantity || 0;
+                const deduction = quantity;
 
-                if (totalAvailable < deductionAmount) {
-                    throw new Error(`Insufficient stock for ${variety}. Available: ${totalAvailable}, Needed: ${deductionAmount}`);
+                if (currentStock < deduction) {
+                    throw new Error(`Insufficient stock for variety: ${variety}. Available: ${currentStock}, Needed: ${deduction}`);
                 }
 
-                let remainingToDeduct = deductionAmount;
+                await updateDoc(stockDoc.ref, {
+                    quantity: currentStock - deduction
+                });
+            }
+        } else {
+            // For bilao-based products and 1/4 slice
+            for (const variety of varieties) {
+                const varietyStockRef = collection(db, "varietyStocks");
+                const q = query(varietyStockRef, where("variety", "==", variety));
+                const snapshot = await getDocs(q);
 
-                // Deduct from stocks starting with earliest production date
-                for (const stockDoc of varietyStocks) {
-                    if (remainingToDeduct <= 0) break;
-
-                    const stockData = stockDoc.data() as Stock;
-                    const currentBilao = stockData.bilao || 0;
-                    const deductAmount = Math.min(remainingToDeduct, currentBilao);
-                    const newBilao = currentBilao - deductAmount;
-
-                    await updateDoc(stockDoc.ref, {
-                        bilao: newBilao,
-                        lastUpdated: new Date().toISOString()
-                    });
-
-                    // Record stock history
-        await addDoc(collection(db, "stockHistory"), {
-                        stockId: stockDoc.id,
-                        variety: variety,
-                        type: "out",
-                        bilao: deductAmount,
-                        previousBilao: currentBilao,
-                        newBilao: newBilao,
-            date: new Date(),
-            updatedBy: "Order System",
-                        remarks: `Order deduction - Order ID: ${orderId} - Deducted ${deductAmount.toFixed(2)} bilao (${size})`,
-                        isDeleted: false,
-                        productionDate: stockData.productionDate,
-                        expiryDate: stockData.expiryDate
-                    });
-
-                    remainingToDeduct -= deductAmount;
+                if (snapshot.empty) {
+                    throw new Error(`No stock found for variety: ${variety}`);
                 }
+
+                const stockDoc = snapshot.docs[0];
+                const currentStock = stockDoc.data().bilao || 0;
+                
+                // Calculate deduction based on size and number of varieties
+                let deductionPerOrder;
+                const sizeKey = size.toLowerCase();
+                
+                if (sizeKey === '1/4' || sizeKey === '1/4 slice') {
+                    deductionPerOrder = 0.25; // Always 0.25 for 1/4 slice
+                } else if (sizeKey === 'half tray') {
+                    // For half tray: 1 bilao if single variety, 0.5 bilao if two varieties
+                    deductionPerOrder = varieties.length === 1 ? 1 : 0.5;
+                } else if (sizeKey === 'big bilao' || sizeKey === 'tray') {
+                    // Deduction based on number of varieties
+                    switch (varieties.length) {
+                        case 1: deductionPerOrder = 1; break;    // 1 variety = 1 bilao
+                        case 2: deductionPerOrder = 0.5; break;  // 2 varieties = 0.5 bilao each
+                        case 3: deductionPerOrder = 0.34; break; // 3 varieties ≈ 0.34 bilao each
+                        case 4: deductionPerOrder = 0.25; break; // 4 varieties = 0.25 bilao each
+                        default: deductionPerOrder = 0.25;       // Default case
+                    }
+                } else {
+                    throw new Error(`Invalid size: ${size}`);
+                }
+
+                const totalDeduction = deductionPerOrder * quantity;
+
+                if (currentStock < totalDeduction) {
+                    throw new Error(`Insufficient stock for variety: ${variety}. Available: ${currentStock.toFixed(2)}, Needed: ${totalDeduction.toFixed(2)}`);
+                }
+
+                await updateDoc(stockDoc.ref, {
+                    bilao: currentStock - totalDeduction
+                });
+
+                // Log the stock deduction
+                await addDoc(collection(db, "stockHistory"), {
+                    stockId: stockDoc.id,
+                    variety: variety,
+                    type: "out",
+                    bilao: totalDeduction,
+                    previousBilao: currentStock,
+                    newBilao: currentStock - totalDeduction,
+                    date: new Date(),
+                    updatedBy: "Order System",
+                    remarks: `Order deduction - ${totalDeduction.toFixed(2)} bilao (${size}, ${varieties.length} varieties)`,
+                    isDeleted: false
+                });
             }
         }
 
-        return {
-            success: true,
-            message: 'Stock deducted successfully'
-        };
-
     } catch (error) {
-        console.error('Error processing order:', error);
+        console.error("Error deducting stock:", error);
         throw error;
     }
-};
+}
 
 export default function Stock() {
     const [stocks, setStocks] = useState<Stock[]>([]);
     const [stockHistory, setStockHistory] = useState<StockHistory[]>([]);
-    
+
     const [varietyStock, setVarietyStock] = useState<Stock>({
         id: '',
         type: 'variety',
@@ -556,7 +502,7 @@ export default function Stock() {
             const exactVarietyName = VARIETIES.find(v => v.toLowerCase() === selectedVariety.toLowerCase());
             if (!exactVarietyName) {
                 alert("Invalid product selected");
-                return;
+                    return;
             }
 
             // Create a new variety stock batch
@@ -569,7 +515,7 @@ export default function Stock() {
                 criticalLevel,
                 productionDate,
                 expiryDate,
-                lastUpdated: new Date().toISOString()
+                    lastUpdated: new Date().toISOString()
             });
 
             // Add to stock history
@@ -581,7 +527,7 @@ export default function Stock() {
                 bilao,
                 previousBilao: 0,
                 newBilao: bilao,
-                date: new Date(),
+                    date: new Date(),
                 updatedBy: "System",
                 remarks: `Added new batch of ${bilao} bilao for ${exactVarietyName}`,
                 isDeleted: false,
@@ -655,7 +601,7 @@ export default function Stock() {
 
     const handleEdit = (stk: Stock) => {
         setEditStockId(stk.id);
-        setVarietyStock(stk);
+            setVarietyStock(stk);
     };
 
     const filteredStocks = stocks
@@ -922,16 +868,16 @@ export default function Stock() {
                             >
                                 Reset
                             </button>
-                                            <button
+                            <button
                                 type="submit"
                                 className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
                                 disabled={loading || !varietyStock.variety}
                             >
                                 {loading ? 'Adding...' : 'Add Product Stock'}
-                                            </button>
-                                        </div>
+                            </button>
+                        </div>
                     </form>
-                                    </div>
+                        </div>
 
                 {/* Bibingka Stock Form */}
                 <div className="p-4 bg-gray-50 rounded mb-8">
@@ -951,7 +897,7 @@ export default function Stock() {
                                     <option value="small">Small</option>
                                     <option value="solo">Solo</option>
                                 </select>
-                                </div>
+                                    </div>
 
                             <div>
                                 <label className="block text-sm font-medium mb-2">Quantity</label>
@@ -965,7 +911,7 @@ export default function Stock() {
                                     required
                                     disabled={!fixedSizeStock.size}
                                 />
-                            </div>
+                                </div>
 
                                 <div>
                                 <label className="block text-sm font-medium mb-2">Low Stock Level</label>
@@ -1067,10 +1013,10 @@ export default function Stock() {
                     </div>
 
                     {/* Product Stock Table */}
-                    <div className="overflow-x-auto">
-                        <table className="min-w-full">
-                            <thead>
-                                <tr className="bg-gray-50">
+                            <div className="overflow-x-auto">
+                                <table className="min-w-full">
+                                    <thead>
+                                        <tr className="bg-gray-50">
                                     <th className="p-3 text-left">Product</th>
                                     <th className="p-3 text-left">Type</th>
                                     <th className="p-3 text-right">Stock</th>
@@ -1078,14 +1024,14 @@ export default function Stock() {
                                     <th className="p-3 text-right">Critical Level</th>
                                     <th className="p-3 text-center">Stock Status</th>
                                     <th className="p-3 text-center">Expiry Status</th>
-                                    <th className="p-3 text-left">Production Date</th>
+                                            <th className="p-3 text-left">Production Date</th>
                                     <th className="p-3 text-left">Expiry Date</th>
                                     <th className="p-3 text-center">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {filteredStocks.map((stk) => {
-                                    const expiryStatus = stk.expiryDate ? getExpiryStatus(stk.expiryDate) : { status: 'N/A', className: 'bg-gray-100 text-gray-800' };
+                                                const expiryStatus = stk.expiryDate ? getExpiryStatus(stk.expiryDate) : { status: 'N/A', className: 'bg-gray-100 text-gray-800' };
                                     const stockValue = stk.type === 'fixed' ? (stk.quantity || 0) : (stk.bilao || 0);
                                     const stockLabel = stk.type === 'fixed' ? 'pieces' : 'bilao';
                                     const productName = stk.type === 'fixed' ? `${stk.variety} (${stk.size})` : stk.variety;
@@ -1109,7 +1055,7 @@ export default function Stock() {
                                                     +
                                                 </button>
                                             </td>
-                                            <td className="p-3 text-right">{stk.minimumStock}</td>
+                                                        <td className="p-3 text-right">{stk.minimumStock}</td>
                                             <td className="p-3 text-right">{stk.criticalLevel}</td>
                                             <td className="p-3 text-center">
                                                 <span className={`px-2 py-1 rounded-full text-xs ${
@@ -1131,8 +1077,8 @@ export default function Stock() {
                                                     {expiryStatus.status}
                                                 </span>
                                             </td>
-                                            <td className="p-3">{formatDate(stk.productionDate)}</td>
-                                            <td className="p-3">{formatDate(stk.expiryDate)}</td>
+                                                        <td className="p-3">{formatDate(stk.productionDate)}</td>
+                                                        <td className="p-3">{formatDate(stk.expiryDate)}</td>
                                             <td className="p-3">
                                                 <div className="flex justify-center">
                                                     <button
