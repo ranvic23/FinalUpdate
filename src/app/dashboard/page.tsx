@@ -63,9 +63,8 @@ interface LowStockItem {
   currentStock: number;
   minimumStock: number;
   criticalLevel: number;
-  type: 'size' | 'variety';
+  type: 'variety' | 'fixed';
   severity: 'critical' | 'low';
-  varieties?: string[];
 }
 
 interface ChartData {
@@ -85,23 +84,13 @@ interface Stock {
   quantity: number;
   minimumStock: number;
   criticalLevel: number;
-  type: 'size' | 'variety';
-  productName?: string;
-  unit?: string;
-  supplier?: string;
-  supplierContact?: string;
-  supplierEmail?: string;
-  receivedDate?: string;
-  lastUpdated?: Date;
-  price?: number;
-  category?: string;
-  location?: string;
-  remarks?: string;
+  type: 'variety' | 'fixed';
+  variety: string;
+  bilao: number;
+  productionDate?: string;
+  expiryDate?: string;
+  lastUpdated?: string;
   size?: string;
-  variety?: string;
-  totalSlices?: number;
-  sizeName?: string;
-  slicesPerUnit?: number;
 }
 
 interface OrderData {
@@ -137,6 +126,20 @@ interface Notification {
   isOrderNotification?: boolean;
 }
 
+// Add new interfaces for the report preview
+interface SalesReportData {
+  title: string;
+  period: string;
+  totalSales: number;
+  totalTransactions: number;
+  transactions: {
+    id: string;
+    customerName: string;
+    amount: number;
+    date: Date;
+  }[];
+}
+
 export default function Dashboard() {
   const router = useRouter(); // Next.js navigation
   const [salesData, setSalesData] = useState<SalesData>({ daily: 0, weekly: 0, monthly: 0, trend: [] });
@@ -159,7 +162,6 @@ export default function Dashboard() {
       tension: 0.1
     }]
   });
-
   const [productChartData, setProductChartData] = useState<ChartData>({
     labels: [],
     datasets: [{
@@ -179,39 +181,20 @@ export default function Dashboard() {
         'rgba(75, 192, 192, 1)',
         'rgba(153, 102, 255, 1)',
       ],
-      borderWidth: 1
+      tension: 0.1
     }]
   });
-
-  const [stock, setStock] = useState<Stock>({
-    id: '',
-    quantity: 0,
-    minimumStock: 0,
-    criticalLevel: 0,
-    type: 'size'
-  });
-
+  const [inventoryMetrics, setInventoryMetrics] = useState({ totalValue: 0, totalItems: 0 });
   const [stockList, setStockList] = useState<Stock[]>([]);
-  const [outOfStockItems, setOutOfStockItems] = useState<Stock[]>([]);
-  const [hasNewOrders, setHasNewOrders] = useState(false);
-  const [lastCheckedOrder, setLastCheckedOrder] = useState<string | null>(null);
 
-  // Add new state for product sort
   const [productSortBy, setProductSortBy] = useState<'quantity' | 'revenue'>('quantity');
+  const [showReportPreview, setShowReportPreview] = useState(false);
+  const [reportData, setReportData] = useState<SalesReportData | null>(null);
 
   useEffect(() => {
     fetchDashboardData();
-    fetchStockList();
-    
-    // Check for new orders immediately
-    checkNewOrders();
-    
-    // Set up interval to check for new orders every 10 seconds
-    const orderCheckInterval = setInterval(checkNewOrders, 10000);
-    
-    return () => {
-      clearInterval(orderCheckInterval);
-    };
+    const interval = setInterval(checkNewOrders, 60000); // Check every minute
+    return () => clearInterval(interval);
   }, []);
 
   const fetchDashboardData = async () => {
@@ -222,7 +205,9 @@ export default function Dashboard() {
         fetchPopularProducts(),
         fetchRecentOrders(),
         fetchLowStockItems(),
-        fetchInventoryMetrics()
+        fetchInventoryMetrics(),
+        fetchStockList(),
+        checkNewOrders()
       ]);
     } catch (error) {
       console.error("Error fetching dashboard data:", error);
@@ -243,8 +228,16 @@ export default function Dashboard() {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       
-      const weekAgo = new Date(today);
-      weekAgo.setDate(weekAgo.getDate() - 7);
+      // Calculate week start (Monday) and end (Sunday)
+      const day = today.getDay();
+      const diff = today.getDate() - day + (day === 0 ? -6 : 1); // Adjust to get Monday
+      const weekStart = new Date(today);
+      weekStart.setDate(diff);
+      weekStart.setHours(0, 0, 0, 0);
+      
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 6);
+      weekEnd.setHours(23, 59, 59, 999);
       
       // Calculate last month's date range
       const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
@@ -264,31 +257,28 @@ export default function Dashboard() {
       let weeklyTotal = 0;
       let monthlyTotal = 0;
       
-      // Initialize last 7 days data
+      // Initialize last 7 days data starting from Monday
       const last7Days = Array.from({ length: 7 }, (_, i) => {
-        const date = new Date();
-        date.setDate(date.getDate() - i);
-        date.setHours(0, 0, 0, 0);
+        const date = new Date(weekStart);
+        date.setDate(date.getDate() + i);
         return {
           date: date.toISOString().split('T')[0],
           total: 0
         };
-      }).reverse();
+      });
 
       querySnapshot.forEach((doc) => {
         const orderData = doc.data();
         const completedDate = new Date(orderData.orderDetails.updatedAt);
-        completedDate.setHours(0, 0, 0, 0);
-        
         const amount = orderData.orderDetails.totalAmount || 0;
 
         // Check if order was completed today
-        if (completedDate.getTime() === today.getTime()) {
+        if (completedDate.toDateString() === today.toDateString()) {
           dailyTotal += amount;
         }
 
-        // Check if order was completed in the last 7 days
-        if (completedDate >= weekAgo) {
+        // Check if order was completed in the current week (Monday to Sunday)
+        if (completedDate >= weekStart && completedDate <= weekEnd) {
           weeklyTotal += amount;
 
           // Add to daily chart data
@@ -536,102 +526,59 @@ export default function Dashboard() {
 
   const fetchLowStockItems = async () => {
     try {
-      const sizeStocksRef = collection(db, "sizeStocks");
+      // Fetch variety stocks
       const varietyStocksRef = collection(db, "varietyStocks");
+      const varietySnapshot = await getDocs(varietyStocksRef);
+      const varietyStocks = varietySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Stock[];
 
-      const [sizeStocksSnapshot, varietyStocksSnapshot] = await Promise.all([
-        getDocs(sizeStocksRef),
-        getDocs(varietyStocksRef)
-      ]);
-      
-      // Process size stocks
-      const sizeStockItems = sizeStocksSnapshot.docs.map(doc => {
-        const data = doc.data();
-        const currentStock = data.slices || 0;
-        const minimumStock = data.minimumStock || 10;
-        const criticalLevel = data.criticalLevel || 20;
-
-        // Only include if stock is at or below critical level
-        if (currentStock > criticalLevel) {
-          return null;
-        }
-
-        return {
+      // Fetch fixed size stocks
+      const fixedStocksRef = collection(db, "fixedSizeStocks");
+      const fixedSnapshot = await getDocs(fixedStocksRef);
+      const fixedStocks = fixedSnapshot.docs.map(doc => ({
           id: doc.id,
-          name: data.size || 'N/A',
-          currentStock,
-          minimumStock,
-          criticalLevel,
-          type: 'size' as const,
-          severity: currentStock <= minimumStock ? 'critical' : 'low',
-          varieties: []
-        } as LowStockItem;
-      }).filter((item): item is LowStockItem => item !== null);
+        ...doc.data()
+      })) as Stock[];
 
-      // Process variety stocks
-      const varietyStockItems = varietyStocksSnapshot.docs.map(doc => {
-        const data = doc.data();
-        const currentStock = data.slices || 0;
-        const minimumStock = data.minimumStock || 10;
-        const criticalLevel = data.criticalLevel || 20;
+      // Combine and filter low stock items
+      const allStocks = [...varietyStocks, ...fixedStocks];
+      const lowStocks = allStocks
+        .filter(stock => {
+          const stockLevel = stock.type === 'variety' ? stock.bilao : stock.quantity;
+          return stockLevel <= stock.minimumStock;
+        })
+        .map(stock => ({
+          id: stock.id,
+          name: stock.type === 'variety' ? stock.variety : `${stock.variety} (${stock.size})`,
+          currentStock: stock.type === 'variety' ? stock.bilao : stock.quantity || 0,
+          minimumStock: stock.minimumStock,
+          criticalLevel: stock.criticalLevel,
+          type: stock.type,
+          severity: (stock.type === 'variety' ? stock.bilao : stock.quantity || 0) <= stock.criticalLevel ? 'critical' as const : 'low' as const
+        }));
 
-        // Only include if stock is at or below critical level
-        if (currentStock > criticalLevel) {
-          return null;
-        }
+      setLowStockItems(lowStocks);
 
-        return {
-          id: doc.id,
-          name: data.variety || 'N/A',
-          currentStock,
-          minimumStock,
-          criticalLevel,
-          type: 'variety' as const,
-          severity: currentStock <= minimumStock ? 'critical' : 'low',
-          varieties: []
-        } as LowStockItem;
-      }).filter((item): item is LowStockItem => item !== null);
-
-      // Combine low stock items
-      const allStockItems = [...sizeStockItems, ...varietyStockItems];
-      
-      setLowStockItems(allStockItems);
-      
-      // Clear existing notifications before adding new ones
-      setNotifications([]);
-      
-      // Update stock notifications
-      allStockItems.forEach(item => {
-        if (item.currentStock <= item.minimumStock) {
-          const itemType = item.type === 'size' ? 'Size' : 'Variety';
-          const status = item.currentStock === 0 ? 'Out of Stock' : 'Critical Level';
-          const unit = item.type === 'size' ? 'boxes/tray' : 'slices';
-          const message = `${status}: ${itemType} - ${item.name} (${item.currentStock} ${unit} remaining)`;
-          
-          setNotifications(prev => [...prev, {
-            id: `stock-${item.id}-${Date.now()}`,
-            message,
-            type: 'error',
+      // Add notifications for critical stock levels
+      const criticalStocks = lowStocks.filter(item => item.severity === 'critical');
+      if (criticalStocks.length > 0) {
+        setNotifications(prev => [
+          ...prev.filter(n => !n.id.startsWith('stock-')), // Remove old stock notifications
+          ...criticalStocks.map(item => ({
+            id: `stock-${item.id}`,
+            message: `Critical stock level: ${item.name} (${item.currentStock} remaining)`,
+            type: 'warning' as const,
             createdAt: new Date()
-          }]);
-        } else if (item.currentStock <= item.criticalLevel) {
-          const itemType = item.type === 'size' ? 'Size' : 'Variety';
-          const unit = item.type === 'size' ? 'boxes/tray' : 'slices';
-          const message = `Low Stock: ${itemType} - ${item.name} (${item.currentStock} ${unit} remaining)`;
-          
-          setNotifications(prev => [...prev, {
-            id: `stock-${item.id}-${Date.now()}`,
-            message,
-            type: 'warning',
-            createdAt: new Date()
-          }]);
-        }
-      });
+          }))
+        ]);
+      }
     } catch (error) {
       console.error("Error fetching low stock items:", error);
-      setNotifications(prev => [...prev, {
+          setNotifications(prev => [...prev, {
         id: `error-${Date.now()}`,
-        message: "Failed to fetch inventory alerts",
+        message: "Failed to fetch stock levels",
         type: 'error',
         createdAt: new Date()
       }]);
@@ -640,150 +587,55 @@ export default function Dashboard() {
 
   const fetchInventoryMetrics = async () => {
     try {
-      const [sizeStocksSnapshot, varietyStocksSnapshot] = await Promise.all([
-        getDocs(collection(db, "sizeStocks")),
-        getDocs(collection(db, "varietyStocks"))
-      ]);
-      
-      let totalValue = 0;
-      let totalItems = 0;
-      
-      // Process size stocks
-      sizeStocksSnapshot.docs.forEach(doc => {
-        const data = doc.data();
-        totalValue += (data.quantity * (data.price || 0)) || 0;
-        totalItems += data.quantity || 0;
-      });
+      // Fetch variety stocks
+      const varietyStocksRef = collection(db, "varietyStocks");
+      const varietySnapshot = await getDocs(varietyStocksRef);
+      const varietyStocks = varietySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Stock[];
 
-      // Process variety stocks
-      varietyStocksSnapshot.docs.forEach(doc => {
-        const data = doc.data();
-        totalValue += (data.quantity * (data.price || 0)) || 0;
-        totalItems += data.quantity || 0;
+      // Fetch fixed size stocks
+      const fixedStocksRef = collection(db, "fixedSizeStocks");
+      const fixedSnapshot = await getDocs(fixedStocksRef);
+      const fixedStocks = fixedSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Stock[];
+
+      // Calculate total items
+      const totalVarietyItems = varietyStocks.reduce((sum, stock) => sum + (stock.bilao || 0), 0);
+      const totalFixedItems = fixedStocks.reduce((sum, stock) => sum + (stock.quantity || 0), 0);
+
+      setInventoryMetrics({
+        totalValue: 0, // You can add price calculation if needed
+        totalItems: totalVarietyItems + totalFixedItems
       });
-      
-      setTotalInventoryValue(totalValue);
-      setTotalProducts(totalItems);
     } catch (error) {
       console.error("Error fetching inventory metrics:", error);
-      setNotifications(prev => [...prev, {
-        id: `error-${Date.now()}`,
-        message: "Failed to fetch inventory metrics",
-        type: 'error',
-        createdAt: new Date()
-      }]);
     }
   };
 
   const fetchStockList = async () => {
     try {
-      const sizeStocksRef = collection(db, "sizeStocks");
+      // Fetch variety stocks
       const varietyStocksRef = collection(db, "varietyStocks");
+      const varietySnapshot = await getDocs(varietyStocksRef);
+      const varietyStocks = varietySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Stock[];
 
-      const sizeStocksSnapshot = await getDocs(sizeStocksRef);
-      const varietyStocksSnapshot = await getDocs(varietyStocksRef);
+      // Fetch fixed size stocks
+      const fixedStocksRef = collection(db, "fixedSizeStocks");
+      const fixedSnapshot = await getDocs(fixedStocksRef);
+      const fixedStocks = fixedSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Stock[];
 
-      const sizeStocks = sizeStocksSnapshot.docs.map(doc => {
-        const data = doc.data();
-        // Get the slices per box/tray based on size
-        const slicesConfig = {
-          'Big Bilao': 60,
-          'Half Tray': 24,
-          'Small': 30,
-          'Solo': 20,
-          'Tray': 48,
-          '1/4 Slice': 12,
-
-        };
-        
-        return {
-          id: doc.id,
-          quantity: data.slices || 0, // Read quantity from slices field
-          minimumStock: data.minimumStock || 10,
-          criticalLevel: data.criticalLevel || 20,
-          type: 'size' as const,
-          sizeName: data.size || 'N/A',
-          slicesPerUnit: slicesConfig[data.size as keyof typeof slicesConfig] || 0
-        } as Stock;
-      });
-
-      const varietyStocks = varietyStocksSnapshot.docs.map(doc => {
-        const data = doc.data();
-        return {
-          id: doc.id,
-          productName: data.productName || '',
-          quantity: data.quantity || 0,
-          unit: data.unit || '',
-          supplier: data.supplier || '',
-          supplierContact: data.supplierContact || '',
-          supplierEmail: data.supplierEmail || '',
-          minimumStock: data.minimumStock || 10,
-          criticalLevel: data.criticalLevel || 20,
-          receivedDate: data.receivedDate || '',
-          lastUpdated: new Date(data.lastUpdated || Date.now()),
-          price: data.price || 0,
-          category: data.category || '',
-          location: data.location || '',
-          remarks: data.remarks || '',
-          size: 'N/A',
-          variety: data.variety || '',
-          totalSlices: data.slices || 0,
-          type: 'variety'
-        } as Stock;
-      });
-
-      const stocks = [...sizeStocks, ...varietyStocks];
-
-      // Sort sizes in a specific order
-      const sizeOrder = [ 'Small', 'Solo', 'Tray', '1/4 Slice', 'Half Tray', 'Big Bilao'];
-      
-      // Sort stocks by type first (size before variety), then by size order
-      const organizedStocks = stocks.sort((a, b) => {
-        // First sort by type
-        if (a.type !== b.type) {
-          return a.type === 'size' ? -1 : 1;
-        }
-
-        // If both are sizes, sort by size order
-        if (a.type === 'size' && b.type === 'size') {
-          const indexA = sizeOrder.indexOf(a.size || '');
-          const indexB = sizeOrder.indexOf(b.size || '');
-          
-          if (indexA !== -1 && indexB !== -1) {
-            return indexA - indexB;
-          }
-          
-          if (indexA !== -1) return -1;
-          if (indexB !== -1) return 1;
-        }
-        
-        // If both are varieties or if sorting by size failed, sort alphabetically
-        return (a.variety || '').localeCompare(b.variety || '');
-      });
-
-      setStockList(organizedStocks);
-      
-      // Map stocks to low stock items with type assertion
-      const lowStockItems = [...sizeStocks, ...varietyStocks]
-        .filter(stock => stock.quantity <= stock.minimumStock)
-        .map(stock => ({
-          id: stock.id,
-          name: stock.type === 'size' ? stock.sizeName || 'N/A' : stock.productName || 'N/A',
-          currentStock: stock.quantity,
-          minimumStock: stock.minimumStock,
-          criticalLevel: stock.criticalLevel,
-          type: stock.type,
-          severity: stock.quantity <= stock.criticalLevel ? 'critical' : 'low',
-          varieties: []
-        } as LowStockItem));
-
-      setLowStockItems(lowStockItems);
-      
-      // Update out of stock items
-      const outOfStock = organizedStocks.filter(stock => 
-        stock.type === 'size' ? stock.quantity === 0 : stock.totalSlices === 0
-      );
-      setOutOfStockItems(outOfStock);
+      // Combine both types of stocks
+      setStockList([...varietyStocks, ...fixedStocks]);
     } catch (error) {
       console.error("Error fetching stock list:", error);
       setNotifications(prev => [...prev, {
@@ -924,7 +776,7 @@ export default function Dashboard() {
     router.push('/inventory/stock-management');
   };
 
-  // Update the generateSalesReport function
+  // Modify generateSalesReport function
   const generateSalesReport = async (period: 'daily' | 'weekly' | 'monthly') => {
     try {
       const now = new Date();
@@ -942,7 +794,6 @@ export default function Dashboard() {
           reportTitle = `Daily Sales Report (${startDate.toLocaleDateString()})`;
           break;
         case 'weekly':
-          // Calculate last Monday (same as fetchSalesData)
           const day = now.getDay();
           const diff = now.getDate() - day + (day === 0 ? -6 : 1);
           startDate = new Date(now);
@@ -960,7 +811,6 @@ export default function Dashboard() {
           reportTitle = 'Sales Report';
       }
 
-      // Query completed orders with same logic as fetchSalesData
       const ordersSnapshot = await getDocs(query(
         collection(db, "orders"),
         where("orderDetails.status", "==", "Completed"),
@@ -969,92 +819,69 @@ export default function Dashboard() {
         where("orderDetails.updatedAt", "<=", endDate.toISOString())
       ));
 
-      // Process orders
       const orders = ordersSnapshot.docs.map(doc => {
         const data = doc.data();
         let customerName = 'Walk-in Customer';
+        let amount = 0;
 
-        // Handle walk-in orders
-        if (data.orderType === 'walk-in' && data.customerName) {
-          customerName = data.customerName;
-        }
-        // Handle online orders with userDetails
-        else if (data.userDetails) {
-          customerName = `${data.userDetails.firstName} ${data.userDetails.lastName}`.trim();
-        }
-        // Handle online orders with customerDetails
-        else if (data.customerDetails?.name) {
-          customerName = data.customerDetails.name;
-        }
+        try {
+          const rawAmount = data.orderDetails?.totalAmount;
+          if (typeof rawAmount === 'number') {
+            amount = rawAmount;
+          } else if (typeof rawAmount === 'string') {
+            amount = parseFloat(rawAmount);
+          }
+          
+          if (isNaN(amount) || amount < 0) {
+            console.warn(`Invalid amount for order ${doc.id}: ${rawAmount}`);
+            amount = 0;
+          }
 
-        return {
-          id: doc.id,
-          amount: Number(data.orderDetails.totalAmount) || 0,
-          date: new Date(data.orderDetails.updatedAt),
-          customerName
-        };
+          if (data.orderType === 'walk-in' && data.customerName) {
+            customerName = data.customerName;
+          } else if (data.userDetails?.firstName || data.userDetails?.lastName) {
+            customerName = `${data.userDetails.firstName || ''} ${data.userDetails.lastName || ''}`.trim();
+          } else if (data.customerDetails?.name) {
+            customerName = data.customerDetails.name;
+          }
+
+          const date = new Date(data.orderDetails.updatedAt);
+          if (isNaN(date.getTime())) {
+            throw new Error(`Invalid date for order ${doc.id}`);
+          }
+
+          return {
+            id: doc.id,
+            amount,
+            date,
+            customerName
+          };
+        } catch (error) {
+          console.error(`Error processing order ${doc.id}:`, error);
+          return {
+            id: doc.id,
+            amount: 0,
+            date: new Date(data.orderDetails?.updatedAt || new Date()),
+            customerName
+          };
+        }
       }).sort((a, b) => a.date.getTime() - b.date.getTime());
 
-      // Calculate totals
-      const totalSales = orders.reduce((sum, order) => sum + order.amount, 0);
-      const totalTransactions = orders.length;
+      const validOrders = orders.filter(order => !isNaN(order.amount) && order.amount > 0);
+      const totalSales = validOrders.reduce((sum, order) => sum + order.amount, 0);
+      const totalTransactions = validOrders.length;
 
-      // Create PDF document
-      const doc = new jsPDF();
-      
-      // Add title
-      doc.setFontSize(20);
-      doc.text(reportTitle, 14, 20);
-      
-      // Add report period
-      doc.setFontSize(12);
-      doc.text(`Period: ${startDate.toLocaleDateString()} to ${endDate.toLocaleDateString()}`, 14, 30);
-      
-      // Add summary
-      doc.setFontSize(14);
-      doc.text('Summary', 14, 40);
-      doc.setFontSize(12);
-      doc.text(`Total Sales: ₱${totalSales.toLocaleString()}`, 14, 50);
-      doc.text(`Total Transactions: ${totalTransactions}`, 14, 60);
-      
-      // Add transactions table
-      doc.setFontSize(14);
-      doc.text('Transaction Details', 14, 80);
-      
-      // Prepare table data
-      const tableData = orders.map(order => [
-        order.id.slice(0, 6),
-        order.customerName,
-        `₱${order.amount.toLocaleString()}`,
-        order.date.toLocaleDateString(),
-        order.date.toLocaleTimeString()
-      ]);
-
-      // Add table using autoTable
-      autoTable(doc, {
-        startY: 90,
-        head: [['ID', 'Customer', 'Amount', 'Date', 'Time']],
-        body: tableData,
-        theme: 'grid',
-        headStyles: {
-          fillColor: [41, 128, 185],
-          textColor: 255,
-          fontStyle: 'bold'
-        },
-        alternateRowStyles: {
-          fillColor: [245, 245, 245]
-        }
+      // Set report data for preview
+      setReportData({
+        title: reportTitle,
+        period: `${startDate.toLocaleDateString()} to ${endDate.toLocaleDateString()}`,
+        totalSales,
+        totalTransactions,
+        transactions: validOrders
       });
 
-      // Save the PDF
-      doc.save(`${period}-sales-report-${new Date().toISOString().split('T')[0]}.pdf`);
-
-      setNotifications(prev => [...prev, {
-        id: `report-${Date.now()}`,
-        message: `${reportTitle} generated successfully`,
-        type: 'success',
-        createdAt: new Date()
-      }]);
+      // Show the preview modal
+      setShowReportPreview(true);
 
     } catch (error) {
       console.error("Error generating sales report:", error);
@@ -1065,6 +892,66 @@ export default function Dashboard() {
         createdAt: new Date()
       }]);
     }
+  };
+
+  const downloadReport = () => {
+    if (!reportData) return;
+
+    const doc = new jsPDF();
+    
+    // Add title
+    doc.setFontSize(20);
+    doc.text(reportData.title, 14, 20);
+    
+    // Add report period
+    doc.setFontSize(12);
+    doc.text(`Period: ${reportData.period}`, 14, 30);
+    
+    // Add summary
+    doc.setFontSize(14);
+    doc.text('Summary', 14, 40);
+    doc.setFontSize(12);
+    doc.text(`Total Sales: ₱${reportData.totalSales.toLocaleString()}`, 14, 50);
+    doc.text(`Total Transactions: ${reportData.totalTransactions}`, 14, 60);
+    
+    // Add transactions table
+    doc.setFontSize(14);
+    doc.text('Transaction Details', 14, 80);
+    
+    // Prepare table data
+    const tableData = reportData.transactions.map(order => [
+      order.id.slice(0, 6),
+      order.customerName,
+      `₱${order.amount.toLocaleString()}`,
+      order.date.toLocaleDateString(),
+      order.date.toLocaleTimeString()
+    ]);
+
+    // Add table using autoTable
+    autoTable(doc, {
+      startY: 90,
+      head: [['ID', 'Customer', 'Amount', 'Date', 'Time']],
+      body: tableData,
+      theme: 'grid',
+      headStyles: {
+        fillColor: [41, 128, 185],
+        textColor: 255,
+        fontStyle: 'bold'
+      },
+      alternateRowStyles: {
+        fillColor: [245, 245, 245]
+      }
+    });
+
+    // Save the PDF
+    doc.save(`${reportData.title.toLowerCase().replace(/\s+/g, '-')}.pdf`);
+
+    setNotifications(prev => [...prev, {
+      id: `report-${Date.now()}`,
+      message: `${reportData.title} downloaded successfully`,
+      type: 'success',
+      createdAt: new Date()
+    }]);
   };
 
   if (isLoading) {
@@ -1189,23 +1076,14 @@ export default function Dashboard() {
                 </span>
               </div>
               <p className="text-2xl font-semibold text-gray-900">
-                {stockList.filter(item => {
-                  const stock = item.type === 'size' ? item.quantity : (item.totalSlices || 0);
-                  return stock === 0 || stock <= item.criticalLevel || stock <= item.minimumStock;
-                }).length}
+                {lowStockItems.length}
               </p>
               <div className="flex gap-2 mt-1">
                 <span className="text-xs px-2 py-1 bg-red-100 text-red-700 rounded-full">
-                  {stockList.filter(item => {
-                    const stock = item.type === 'size' ? item.quantity : (item.totalSlices || 0);
-                    return stock === 0 || stock <= item.criticalLevel;
-                  }).length} Critical
+                  {lowStockItems.filter(item => item.severity === 'critical').length} Critical
                 </span>
                 <span className="text-xs px-2 py-1 bg-yellow-100 text-yellow-700 rounded-full">
-                  {stockList.filter(item => {
-                    const stock = item.type === 'size' ? item.quantity : (item.totalSlices || 0);
-                    return stock > item.criticalLevel && stock <= item.minimumStock;
-                  }).length} Low Stock
+                  {lowStockItems.filter(item => item.severity === 'low').length} Low Stock
                 </span>
               </div>
               </div>
@@ -1362,16 +1240,10 @@ export default function Dashboard() {
                   <h3 className="text-base font-semibold text-gray-900">Stock Alerts</h3>
                   <div className="flex gap-2">
                     <span className="px-2 py-1 text-xs font-medium bg-red-100 text-red-800 rounded-full">
-                      {stockList.filter(item => {
-                        const stock = item.type === 'size' ? item.quantity : (item.totalSlices || 0);
-                        return stock === 0 || stock <= item.criticalLevel;
-                      }).length} Critical
+                      {lowStockItems.filter(item => item.severity === 'critical').length} Critical
                     </span>
                     <span className="px-2 py-1 text-xs font-medium bg-yellow-100 text-yellow-800 rounded-full">
-                      {stockList.filter(item => {
-                        const stock = item.type === 'size' ? item.quantity : (item.totalSlices || 0);
-                        return stock > item.criticalLevel && stock <= item.minimumStock;
-                      }).length} Low Stock
+                      {lowStockItems.filter(item => item.severity === 'low').length} Low Stock
                     </span>
                   </div>
                 </div>
@@ -1395,56 +1267,34 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {stockList
-                      .filter(item => {
-                        const stock = item.type === 'size' ? item.quantity : (item.totalSlices || 0);
-                        return stock === 0 || stock <= item.criticalLevel || stock <= item.minimumStock;
-                      })
-                      .map((item) => {
-                        const currentStock = item.type === 'size' ? item.quantity : (item.totalSlices || 0);
-                        const stockLabel = item.type === 'size' ? 'boxes/trays' : 'slices';
-                        
-                        return (
-                          <tr key={item.id} className="hover:bg-gray-50">
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <div className="text-sm font-medium text-gray-900">
-                                {item.type === 'size' ? 'Size' : 'Variety'}
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <div className="text-sm font-medium text-gray-900">
-                                {item.type === 'size' ? item.sizeName : item.variety}
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <div className="text-sm text-gray-900">
-                                {currentStock} {stockLabel}
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                                currentStock === 0 ? 'bg-red-100 text-red-800' :
-                                currentStock <= item.criticalLevel ? 'bg-red-100 text-red-800' :
-                                'bg-yellow-100 text-yellow-800'
-                              }`}>
-                                {currentStock === 0 ? 'Out of Stock' :
-                                 currentStock <= item.criticalLevel ? 'Critical' :
-                                 'Low Stock'}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    {stockList.filter(item => {
-                      const stock = item.type === 'size' ? item.quantity : (item.totalSlices || 0);
-                      return stock === 0 || stock <= item.criticalLevel || stock <= item.minimumStock;
-                    }).length === 0 && (
-                      <tr>
-                        <td colSpan={4} className="px-6 py-4 text-sm text-gray-500 text-center">
-                          No stock alerts
+                    {lowStockItems.map((item) => (
+                      <tr key={item.id} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm font-medium text-gray-900">
+                            {item.type === 'variety' ? 'Variety' : 'Size'}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm font-medium text-gray-900">
+                            {item.name}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm text-gray-900">
+                            {item.currentStock}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                            item.severity === 'critical' ? 'bg-red-100 text-red-800' :
+                            item.severity === 'low' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-green-100 text-green-800'
+                          }`}>
+                            {item.severity === 'critical' ? 'Critical' : item.severity === 'low' ? 'Low Stock' : 'In Stock'}
+                          </span>
                         </td>
                       </tr>
-                    )}
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -1467,10 +1317,10 @@ export default function Dashboard() {
               </div>
             </div>
             
-            {/* Size Stocks */}
+            {/* Fixed Size Stocks */}
             <div className="mb-4">
               <div className="px-6 py-3 bg-gray-50">
-                <h4 className="text-sm font-semibold text-gray-700">Sizes</h4>
+                <h4 className="text-sm font-semibold text-gray-700">Fixed Sizes</h4>
                 </div>
                 <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
@@ -1488,37 +1338,26 @@ export default function Dashboard() {
                       </tr>
                     </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {stockList
-                      .filter(stock => stock.type === 'size')
-                      .map((stock) => (
-                        <tr key={stock.id} className="hover:bg-gray-50">
-                          <td className="px-6 py-4 whitespace-nowrap w-1/3">
-                            <div className="text-sm font-medium text-gray-900">
-                              {stock.sizeName}
-                            </div>
-                            <div className="text-xs text-gray-500">
-                              {stock.slicesPerUnit} slices per box/tray
-                            </div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap w-1/3">
-                            <div className="text-sm text-gray-900">
-                              {stock.quantity} boxes/trays
-                            </div>
-                            <div className="text-xs text-gray-500">
-                              Low Stock: {stock.minimumStock} boxes | Critical: {stock.criticalLevel} boxes
-                            </div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap w-1/3">
-                            <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                              stock.quantity === 0 ? 'bg-red-100 text-red-800' :
-                              stock.quantity <= stock.criticalLevel ? 'bg-red-100 text-red-800' :
-                              stock.quantity <= stock.minimumStock ? 'bg-yellow-100 text-yellow-800' :
-                              'bg-green-100 text-green-800'
-                            }`}>
-                              {stock.quantity === 0 ? 'Out of Stock' :
-                               stock.quantity <= stock.criticalLevel ? 'Critical' :
-                               stock.quantity <= stock.minimumStock ? 'Low Stock' :
-                               'In Stock'}
+                    {stockList.filter(item => item.type === 'fixed').map((stock) => (
+                      <tr key={stock.id} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap w-1/3">
+                          <div className="text-sm font-medium text-gray-900">
+                            {`${stock.variety} (${stock.size})`}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap w-1/3">
+                          <div className="text-sm text-gray-900">
+                            {stock.quantity}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                            stock.quantity <= stock.criticalLevel ? 'bg-red-100 text-red-800' :
+                            stock.quantity <= stock.minimumStock ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-green-100 text-green-800'
+                          }`}>
+                            {stock.quantity <= stock.criticalLevel ? 'Critical' : 
+                             stock.quantity <= stock.minimumStock ? 'Low Stock' : 'In Stock'}
                             </span>
                           </td>
                         </tr>
@@ -1541,7 +1380,7 @@ export default function Dashboard() {
                         Variety
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/3">
-                        Stock Level
+                        Stock Level (Bilao)
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-1/3">
                         Status
@@ -1549,41 +1388,30 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {stockList
-                      .filter(stock => stock.type === 'variety')
-                      .map((stock) => {
-                        const slices = stock.totalSlices || 0;
-                        return (
-                          <tr key={stock.id} className="hover:bg-gray-50">
-                            <td className="px-6 py-4 whitespace-nowrap w-1/3">
-                              <div className="text-sm font-medium text-gray-900">
-                                {stock.variety}
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap w-1/3">
-                              <div className="text-sm text-gray-900">
-                                {slices} slices
-                              </div>
-                              <div className="text-xs text-gray-500">
-                                Low Stock: {stock.minimumStock} | Critical: {stock.criticalLevel}
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap w-1/3">
-                              <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                                slices === 0 ? 'bg-red-100 text-red-800' :
-                                slices <= stock.criticalLevel ? 'bg-red-100 text-red-800' :
-                                slices <= stock.minimumStock ? 'bg-yellow-100 text-yellow-800' :
-                                'bg-green-100 text-green-800'
-                              }`}>
-                                {slices === 0 ? 'Out of Stock' :
-                                 slices <= stock.criticalLevel ? 'Critical' :
-                                 slices <= stock.minimumStock ? 'Low Stock' :
-                                 'In Stock'}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                    {stockList.filter(item => item.type === 'variety').map((stock) => (
+                      <tr key={stock.id} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap w-1/3">
+                          <div className="text-sm font-medium text-gray-900">
+                            {stock.variety}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap w-1/3">
+                          <div className="text-sm text-gray-900">
+                            {stock.bilao}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                            stock.bilao <= stock.criticalLevel ? 'bg-red-100 text-red-800' :
+                            stock.bilao <= stock.minimumStock ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-green-100 text-green-800'
+                          }`}>
+                            {stock.bilao <= stock.criticalLevel ? 'Critical' : 
+                             stock.bilao <= stock.minimumStock ? 'Low Stock' : 'In Stock'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -1671,6 +1499,95 @@ export default function Dashboard() {
               </div>
             </div>
           )}
+
+        {/* Report Preview Modal */}
+        {showReportPreview && reportData && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl shadow-lg w-11/12 max-w-4xl max-h-[90vh] overflow-hidden">
+              <div className="p-6 border-b border-gray-200">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl font-semibold text-gray-900">{reportData.title}</h2>
+                  <button 
+                    onClick={() => setShowReportPreview(false)}
+                    className="text-gray-500 hover:text-gray-700"
+                  >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+        </div>
+              </div>
+              
+              <div className="p-6 overflow-y-auto max-h-[calc(90vh-200px)]">
+                <div className="mb-6">
+                  <p className="text-sm text-gray-600">Period: {reportData.period}</p>
+                  <div className="mt-4 grid grid-cols-2 gap-4">
+                    <div className="bg-blue-50 p-4 rounded-lg">
+                      <p className="text-sm text-blue-600">Total Sales</p>
+                      <p className="text-2xl font-semibold text-blue-900">₱{reportData.totalSales.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-green-50 p-4 rounded-lg">
+                      <p className="text-sm text-green-600">Total Transactions</p>
+                      <p className="text-2xl font-semibold text-green-900">{reportData.totalTransactions}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Customer</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {reportData.transactions.map((transaction) => (
+                        <tr key={transaction.id} className="hover:bg-gray-50">
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                            #{transaction.id.slice(0, 6)}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {transaction.customerName}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            ₱{transaction.amount.toLocaleString()}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {transaction.date.toLocaleDateString()}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {transaction.date.toLocaleTimeString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="p-6 border-t border-gray-200">
+                <div className="flex justify-end gap-4">
+                  <button
+                    onClick={() => setShowReportPreview(false)}
+                    className="px-4 py-2 text-sm text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={downloadReport}
+                    className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                  >
+                    Download PDF
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </ProtectedRoute>
   );

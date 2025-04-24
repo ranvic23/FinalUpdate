@@ -144,36 +144,36 @@ export default function ScheduledOrdersDashboard() {
                 scheduledOrders.map((order) => {
                   const sliceReservations = calculateSliceReservations(order);
                   return (
-                    <div
-                      key={order.id}
-                      className="border rounded-lg p-4 hover:bg-gray-50"
-                    >
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <h4 className="font-medium">{order.customerName}</h4>
-                          <p className="text-sm text-gray-500">
-                            Pickup: {formatDate(order.pickupDate)} at{" "}
-                            {order.pickupTime}
-                          </p>
-                        </div>
-                        <span
-                          className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(
-                            order.status
-                          )}`}
-                        >
-                          {order.status}
-                        </span>
+                  <div
+                    key={order.id}
+                    className="border rounded-lg p-4 hover:bg-gray-50"
+                  >
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <h4 className="font-medium">{order.customerName}</h4>
+                        <p className="text-sm text-gray-500">
+                          Pickup: {formatDate(order.pickupDate)} at{" "}
+                          {order.pickupTime}
+                        </p>
                       </div>
-                      <div className="mt-2">
-                        <h5 className="text-sm font-medium mb-1">Items:</h5>
-                        <ul className="text-sm text-gray-600">
-                          {order.items.map((item, index) => (
-                            <li key={index} className="mb-1">
-                              {item.productQuantity}x {item.productSize} -{" "}
-                              {item.productVarieties.join(", ")}
-                            </li>
-                          ))}
-                        </ul>
+                      <span
+                        className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(
+                          order.status
+                        )}`}
+                      >
+                        {order.status}
+                      </span>
+                    </div>
+                    <div className="mt-2">
+                      <h5 className="text-sm font-medium mb-1">Items:</h5>
+                      <ul className="text-sm text-gray-600">
+                        {order.items.map((item, index) => (
+                          <li key={index} className="mb-1">
+                            {item.productQuantity}x {item.productSize} -{" "}
+                            {item.productVarieties.join(", ")}
+                          </li>
+                        ))}
+                      </ul>
                         <div className="mt-3 pt-3 border-t">
                           <h5 className="text-sm font-medium mb-1">Reserved Slices:</h5>
                           <ul className="text-sm text-gray-600">

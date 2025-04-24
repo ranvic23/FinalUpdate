@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { addDoc, collection, getDocs, query, where, serverTimestamp } from "firebase/firestore";
+import { addDoc, collection, getDocs, query, where, serverTimestamp, deleteDoc, orderBy } from "firebase/firestore";
 import { db } from "../../firebase-config";
 import ProtectedRoute from "@/app/components/protectedroute";
 import Sidebar from "@/app/components/Sidebar";
+import { deductStockOnOrder } from "../../inventory/stock-management/page";
 
 const VARIETIES = [
   'Bibingka',
@@ -113,38 +114,235 @@ interface RawOrderItem {
   productPrice?: number;
 }
 
-interface Order {
+interface WalkInOrder {
   id: string;
-  userId?: string;
-  orderType: string;
+  orderNumber: string;
   customerName: string;
-  orderDetails: {
-    orderType: string;
-    status: string;
-    paymentMethod: string;
-    paymentStatus: string;
-    gcashReference?: string;
-    totalAmount: number;
-    createdAt: string;
-    updatedAt: string;
-    pickupDate: string;
-    pickupTime: string;
-  };
-  items: Array<OrderItem>;
+  items: OrderItem[];
+  totalAmount: number;
+  paymentMethod: string;
+  gcashReference?: string | null;
+  createdAt: string;
+  status: 'completed';
 }
 
+interface OrderStep {
+  step: number;
+  title: string;
+  isComplete: boolean;
+}
+
+interface BilaoDeduction {
+  [key: string]: {
+    totalBilao: number;
+    maxVarieties: number;
+  };
+}
+
+const BILAO_SIZES: BilaoDeduction = {
+  'Big Bilao': { totalBilao: 1, maxVarieties: 4 },
+  'Tray': { totalBilao: 1, maxVarieties: 4 },
+  'Half Tray': { totalBilao: 0.5, maxVarieties: 2 }
+};
+
+const calculateVarietyDeduction = (size: string, selectedVarieties: string[], quantity: number): { variety: string, deduction: number }[] => {
+  const bilaoConfig = BILAO_SIZES[size];
+  if (!bilaoConfig) return [];
+
+  const { totalBilao, maxVarieties } = bilaoConfig;
+  const varietyCount = selectedVarieties.length;
+  
+  // Calculate how much of the bilao each variety gets
+  const deductionPerVariety = totalBilao / varietyCount;
+  
+  // Return deduction amount for each variety
+  return selectedVarieties.map(variety => ({
+    variety,
+    deduction: deductionPerVariety * quantity
+  }));
+};
+
 export default function WalkInOrders() {
+  const [currentStep, setCurrentStep] = useState<number>(1);
   const [selectedProducts, setSelectedProducts] = useState<SelectedProduct[]>([]);
   const [totalAmount, setTotalAmount] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState<string>("Cash");
   const [customerName, setCustomerName] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
-  const [orders, setOrders] = useState<Order[]>([]);
   const [gcashReference, setGcashReference] = useState<string>("");
+  const [currentOrderId, setCurrentOrderId] = useState<string>("");
+  const [walkInOrders, setWalkInOrders] = useState<WalkInOrder[]>([]);
+  const [showInvoice, setShowInvoice] = useState(false);
+  const [currentInvoice, setCurrentInvoice] = useState<WalkInOrder | null>(null);
+
+  const orderSteps: OrderStep[] = [
+    { step: 1, title: "Create Order", isComplete: false },
+    { step: 2, title: "Process Payment", isComplete: false },
+    { step: 3, title: "Complete Order", isComplete: false }
+  ];
 
   useEffect(() => {
     fetchWalkInOrders();
   }, []);
+
+  const fetchWalkInOrders = async () => {
+    try {
+      const ordersRef = collection(db, "walkInOrders");
+      const q = query(ordersRef, orderBy("createdAt", "desc"));
+      const snapshot = await getDocs(q);
+      const orders = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as WalkInOrder[];
+      setWalkInOrders(orders);
+    } catch (error) {
+      console.error("Error fetching walk-in orders:", error);
+    }
+  };
+
+  const generateOrderId = () => {
+    const now = new Date();
+    return `WO-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+  };
+
+  const handleCreateOrder = async () => {
+    if (!customerName.trim()) {
+      alert("Please enter customer name");
+      return;
+    }
+
+    if (selectedProducts.length === 0) {
+      alert("Please select at least one product");
+      return;
+    }
+
+    // Validate product selections
+    for (const product of selectedProducts) {
+      const sizeConfig = sizeConfigs.find(s => s.name === product.size);
+      if (!sizeConfig) {
+        alert(`Invalid size configuration for ${product.size}`);
+        return;
+      }
+
+      if (product.selectedVarieties.length < sizeConfig.minVarieties) {
+        alert(`Please select at least ${sizeConfig.minVarieties} variety for ${product.size}`);
+        return;
+      }
+    }
+
+    const orderId = generateOrderId();
+    setCurrentOrderId(orderId);
+    setCurrentStep(2);
+  };
+
+  const handleProcessPayment = async () => {
+    if (!currentOrderId) {
+      alert("No active order found");
+      return;
+    }
+
+    if (paymentMethod === "GCash" && !gcashReference) {
+      alert("Please enter GCash reference number");
+      return;
+    }
+
+    try {
+      const now = new Date();
+      const orderRef = collection(db, "walkInOrders");
+      
+      const newOrder = {
+        orderNumber: currentOrderId,
+        customerName: customerName.trim(),
+        items: selectedProducts.map(p => ({
+          cartId: p.id,
+          productSize: p.size,
+          productVarieties: p.selectedVarieties,
+          productQuantity: p.quantity,
+          productPrice: p.price
+        })),
+        totalAmount,
+        paymentMethod,
+        gcashReference: paymentMethod === "GCash" ? gcashReference : null,
+        createdAt: now.toISOString(),
+        status: 'completed' as const
+      };
+
+      const orderDoc = await addDoc(orderRef, newOrder);
+      setCurrentInvoice({ id: orderDoc.id, ...newOrder });
+      setShowInvoice(true);
+      setCurrentStep(3);
+      fetchWalkInOrders();
+
+    } catch (error) {
+      console.error("Error processing payment:", error);
+      alert("Error processing payment. Please try again.");
+    }
+  };
+
+  const handleCompleteOrder = async () => {
+    setLoading(true);
+    try {
+      // Update inventory
+      for (const product of selectedProducts) {
+        const isFixedSize = product.size.toLowerCase() === 'small' || product.size.toLowerCase() === 'solo';
+        
+        if (isFixedSize) {
+          // Handle fixed size products normally
+          await deductStockOnOrder({
+            orderId: currentOrderId,
+            size: product.size,
+            varieties: product.selectedVarieties,
+            quantity: product.quantity,
+            isFixedSize: true
+          });
+        } else if (product.size === '1/4 Slice') {
+          // Handle 1/4 slice normally (one variety only)
+          await deductStockOnOrder({
+            orderId: currentOrderId,
+            size: product.size,
+            varieties: product.selectedVarieties,
+            quantity: product.quantity,
+            isFixedSize: false
+          });
+        } else {
+          // Handle bilao-based products with proportional deduction
+          const deductions = calculateVarietyDeduction(
+            product.size,
+            product.selectedVarieties,
+            product.quantity
+          );
+
+          // Apply deductions for each variety
+          for (const { variety, deduction } of deductions) {
+            await deductStockOnOrder({
+              orderId: currentOrderId,
+              size: product.size,
+              varieties: [variety],
+              quantity: deduction,
+              isFixedSize: false
+            });
+          }
+        }
+      }
+
+      // Reset form
+      setSelectedProducts([]);
+      setTotalAmount(0);
+      setCustomerName("");
+      setPaymentMethod("Cash");
+      setGcashReference("");
+      setCurrentOrderId("");
+      setShowInvoice(false);
+      setCurrentInvoice(null);
+      setCurrentStep(1);
+
+    } catch (error) {
+      console.error("Error updating inventory:", error);
+      alert("Error updating inventory. Please check stock levels.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleAddProduct = (sizeConfig: SizeConfig) => {
     const selectedProduct: SelectedProduct = {
@@ -197,9 +395,13 @@ export default function WalkInOrders() {
       return;
     }
 
-    if (selectedOptions.length > sizeConfig.maxVarieties) {
-      alert(`${sizeConfig.name} can only have up to ${sizeConfig.maxVarieties} varieties`);
-      return;
+    // For bilao-based products, ensure proper variety count
+    if (BILAO_SIZES[sizeConfig.name]) {
+      const { maxVarieties } = BILAO_SIZES[sizeConfig.name];
+      if (selectedOptions.length > maxVarieties) {
+        alert(`${sizeConfig.name} can only have up to ${maxVarieties} varieties`);
+        return;
+      }
     }
 
     if (selectedOptions.length < sizeConfig.minVarieties) {
@@ -218,135 +420,76 @@ export default function WalkInOrders() {
     setPaymentMethod(e.target.value);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
+  const Invoice = ({ order }: { order: WalkInOrder }) => {
+    return (
+      <div className="bg-white p-8 rounded-lg shadow-lg max-w-2xl mx-auto">
+        <div className="text-center mb-8">
+          <h2 className="text-2xl font-bold">INVOICE</h2>
+          <p className="text-gray-600">Order #{order.orderNumber}</p>
+        </div>
 
-    if (!customerName.trim()) {
-      alert("Please enter customer name");
-      setLoading(false);
-      return;
-    }
+        <div className="mb-6">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="font-semibold">Customer:</p>
+              <p>{order.customerName}</p>
+            </div>
+            <div className="text-right">
+              <p className="font-semibold">Date:</p>
+              <p>{new Date(order.createdAt).toLocaleDateString()}</p>
+              <p>{new Date(order.createdAt).toLocaleTimeString()}</p>
+            </div>
+          </div>
+        </div>
 
-    if (selectedProducts.length === 0) {
-      alert("Please select at least one product");
-      setLoading(false);
-      return;
-    }
+        <table className="w-full mb-6">
+          <thead>
+            <tr className="border-b-2 border-gray-300">
+              <th className="text-left py-2">Item</th>
+              <th className="text-center py-2">Quantity</th>
+              <th className="text-right py-2">Price</th>
+              <th className="text-right py-2">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {order.items.map((item, index) => (
+              <tr key={index} className="border-b border-gray-200">
+                <td className="py-2">
+                  {item.productSize}
+                  <br />
+                  <span className="text-sm text-gray-600">
+                    {item.productVarieties.join(", ")}
+                  </span>
+                </td>
+                <td className="text-center py-2">{item.productQuantity}</td>
+                <td className="text-right py-2">₱{item.productPrice.toLocaleString()}</td>
+                <td className="text-right py-2">
+                  ₱{(item.productPrice * item.productQuantity).toLocaleString()}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
 
-    if (paymentMethod === "GCash" && !gcashReference) {
-      alert("Please enter GCash reference number");
-      setLoading(false);
-      return;
-    }
+        <div className="border-t-2 border-gray-300 pt-4">
+          <div className="flex justify-between items-center text-xl font-bold">
+            <span>Total Amount:</span>
+            <span>₱{order.totalAmount.toLocaleString()}</span>
+          </div>
+          <div className="mt-2 text-gray-600">
+            <p>Payment Method: {order.paymentMethod}</p>
+            {order.gcashReference && (
+              <p>GCash Reference: {order.gcashReference}</p>
+            )}
+          </div>
+        </div>
 
-    // Validate that all products have required varieties selected
-    for (const product of selectedProducts) {
-      const sizeConfig = sizeConfigs.find(s => s.name === product.size);
-      if (!sizeConfig) {
-        alert(`Invalid size configuration for ${product.size}`);
-        setLoading(false);
-        return;
-      }
-
-      if (product.selectedVarieties.length < sizeConfig.minVarieties) {
-        alert(`Please select at least ${sizeConfig.minVarieties} variety for ${product.size}`);
-        setLoading(false);
-        return;
-      }
-    }
-
-    try {
-      const orderRef = collection(db, "orders");
-      const now = new Date().toISOString();
-      
-      const newOrder = {
-        orderType: "walk-in",
-        customerName: customerName.trim(),
-        orderDetails: {
-          orderType: "walk-in",
-          status: "Pending Verification",
-          paymentMethod,
-          paymentStatus: "pending",
-          gcashReference: paymentMethod === "GCash" ? gcashReference : null,
-          totalAmount,
-          createdAt: now,
-          updatedAt: now,
-          pickupDate: now,
-          pickupTime: new Date().toLocaleTimeString('en-US', { 
-            hour: 'numeric', 
-            minute: '2-digit', 
-            hour12: true 
-          })
-        },
-        items: selectedProducts.map(p => ({
-          cartId: p.id,
-          productSize: p.size,
-          productVarieties: p.selectedVarieties,
-          productQuantity: p.quantity,
-          productPrice: p.price
-        }))
-      };
-
-      const orderDoc = await addDoc(orderRef, newOrder);
-      
-      setSelectedProducts([]);
-      setTotalAmount(0);
-      setCustomerName("");
-      setPaymentMethod("Cash");
-      setGcashReference("");
-      
-      fetchWalkInOrders();
-      
-      alert("Order created successfully! Please wait for payment verification.");
-    } catch (error) {
-      console.error("Error creating order:", error);
-      alert("Error creating order. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchWalkInOrders = async () => {
-    try {
-      const ordersRef = collection(db, "orders");
-      const q = query(
-        ordersRef, 
-        where("orderType", "==", "walk-in"),
-        where("orderDetails.orderType", "==", "walk-in")
-      );
-      const snapshot = await getDocs(q);
-      const ordersList = snapshot.docs.map(doc => {
-        const data = doc.data();
-        return {
-          id: doc.id,
-          orderType: data.orderType || "walk-in",
-          customerName: data.customerName || "Unknown",
-          orderDetails: {
-            orderType: data.orderDetails?.orderType || "walk-in",
-            status: data.orderDetails?.status || "pending",
-            paymentMethod: data.orderDetails?.paymentMethod || "Cash",
-            paymentStatus: data.orderDetails?.paymentStatus || "pending",
-            gcashReference: data.orderDetails?.gcashReference || null,
-            totalAmount: data.orderDetails?.totalAmount || 0,
-            createdAt: data.orderDetails?.createdAt || new Date().toISOString(),
-            updatedAt: data.orderDetails?.updatedAt || new Date().toISOString(),
-            pickupDate: data.orderDetails?.pickupDate || new Date().toISOString(),
-            pickupTime: data.orderDetails?.pickupTime || new Date().toLocaleTimeString()
-          },
-          items: (data.items || []).map((item: RawOrderItem): OrderItem => ({
-            cartId: item.cartId || "",
-            productSize: item.productSize || "",
-            productVarieties: Array.isArray(item.productVarieties) ? item.productVarieties : [],
-            productQuantity: item.productQuantity || 0,
-            productPrice: item.productPrice || 0
-          }))
-        };
-      });
-      setOrders(ordersList);
-    } catch (error) {
-      console.error("Error fetching walk-in orders:", error);
-    }
+        <div className="mt-8 text-center text-sm text-gray-600">
+          <p>Thank you for your purchase!</p>
+          <p>Please keep this invoice for your records.</p>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -356,109 +499,122 @@ export default function WalkInOrders() {
         <div className="flex-grow p-6">
           <h1 className="text-3xl font-bold text-gray-800 mb-6">Walk-in Orders</h1>
           
-          <div className="bg-white p-6 rounded-lg shadow-md mb-6">
-            <h2 className="text-xl font-semibold mb-4">Create New Order</h2>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Customer Name</label>
-                <input
-                  type="text"
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                  required
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Payment Method</label>
-                <select
-                  value={paymentMethod}
-                  onChange={handlePaymentMethodChange}
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                >
-                  <option value="Cash">Cash</option>
-                  <option value="GCash">GCash</option>
-                </select>
-              </div>
-
-              {paymentMethod === "GCash" && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">GCash Reference Number</label>
-                  <input
-                    type="text"
-                    value={gcashReference}
-                    onChange={(e) => setGcashReference(e.target.value)}
-                    required
-                    placeholder="Enter GCash reference number"
-                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                  />
-                </div>
-              )}
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Select Size</label>
-                <div className="mt-2 space-y-2">
-                  {sizeConfigs.map((size) => (
-                    <div key={size.id} className="flex items-center justify-between p-3 bg-gray-50 rounded border">
-                      <div className="flex-1">
-                        <span className="block font-medium">{size.name}</span>
-                        <div className="text-sm text-gray-600">
-                          <p>Total Slices: {size.totalSlices}</p>
-                          {size.allowedVarieties && (
-                            <p>Allowed Varieties: {size.allowedVarieties.join(", ")}</p>
-                          )}
-                          {size.excludedVarieties && (
-                            <p>Excluded Varieties: {size.excludedVarieties.join(", ")}</p>
-                          )}
-                          <p>Varieties: Min {size.minVarieties}, Max {size.maxVarieties}</p>
-                        </div>
-                        <span className="block text-sm font-medium text-blue-600">Price: ₱{size.price.toLocaleString()}</span>
+          {/* Progress Steps */}
+          {!showInvoice && (
+            <div className="mb-8">
+              <div className="flex justify-between items-center">
+                {orderSteps.map((step) => (
+                  <div key={step.step} className="flex-1">
+                    <div className={`relative flex items-center ${
+                      currentStep === step.step ? 'text-blue-600' :
+                      currentStep > step.step ? 'text-green-600' : 'text-gray-400'
+                    }`}>
+                      <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center ${
+                        currentStep === step.step ? 'border-blue-600 bg-blue-50' :
+                        currentStep > step.step ? 'border-green-600 bg-green-50' : 'border-gray-300'
+                      }`}>
+                        {currentStep > step.step ? '✓' : step.step}
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleAddProduct(size)}
-                        className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600"
-                      >
-                        Add
-                      </button>
+                      <div className="ml-4">
+                        <p className="text-sm font-medium">{step.title}</p>
+                      </div>
+                      {step.step < orderSteps.length && (
+                        <div className={`flex-1 border-t-2 ${
+                          currentStep > step.step ? 'border-green-600' : 'border-gray-300'
+                        }`} />
+                      )}
                     </div>
-                  ))}
-                </div>
+                  </div>
+                ))}
               </div>
+            </div>
+          )}
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Selected Products</label>
-                <div className="mt-2 space-y-4">
-                  {selectedProducts.map((product, index) => (
-                    <div key={index} className="p-4 bg-gray-50 rounded-lg border">
-                      <div className="flex justify-between items-start mb-3">
-                        <div>
-                          <h4 className="font-medium">{product.size}</h4>
-                          <p className="text-sm text-gray-600">Price: ₱{product.price.toLocaleString()}</p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveProduct(index)}
-                          className="text-red-500 hover:text-red-700"
-                        >
-                          <span className="sr-only">Remove</span>
-                          ×
-                        </button>
+          {/* Invoice View */}
+          {showInvoice && currentInvoice && (
+            <div className="mb-6">
+              <Invoice order={currentInvoice} />
+              <div className="mt-6 flex justify-center">
+                <button
+                  onClick={handleCompleteOrder}
+                  disabled={loading}
+                  className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
+                >
+                  {loading ? "Processing..." : "Complete Order"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Main Content */}
+          {!showInvoice && (
+            <>
+              {/* Step 1: Create Order */}
+              {currentStep === 1 && (
+                <div className="bg-white p-6 rounded-lg shadow-md mb-6">
+                  <h2 className="text-xl font-semibold mb-4">Create New Order</h2>
+                  
+                  {/* Customer Information */}
+                  <div className="mb-6">
+                    <label className="block text-sm font-medium text-gray-700">Customer Name</label>
+                    <input
+                      type="text"
+                      value={customerName}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (value === '' || /^[A-Za-z\s\-'.]+$/.test(value)) {
+                          setCustomerName(value);
+                        }
+                      }}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                      placeholder="Enter customer name"
+                      required
+                    />
+                  </div>
+
+                  {/* Product Selection Grid */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+                    {sizeConfigs.map((size) => (
+                      <div
+                        key={size.id}
+                        className="border rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer"
+                        onClick={() => handleAddProduct(size)}
+                      >
+                        <h3 className="text-lg font-medium text-gray-900">{size.name}</h3>
+                        <p className="text-sm text-gray-500">Slices: {size.totalSlices}</p>
+                        <p className="text-sm text-gray-500">
+                          Varieties: {size.minVarieties}-{size.maxVarieties}
+                        </p>
+                        <p className="mt-2 text-lg font-semibold text-blue-600">₱{size.price.toLocaleString()}</p>
                       </div>
-                      
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700">
-                            Select Varieties (Min: {sizeConfigs.find(s => s.name === product.size)?.minVarieties || 1}, 
-                            Max: {sizeConfigs.find(s => s.name === product.size)?.maxVarieties || 1})
-                          </label>
-                          <div className="mt-2 space-y-2">
-                            {product.varieties.map((variety) => {
-                              const sizeConfig = sizeConfigs.find(s => s.name === product.size);
-                              if (!sizeConfig) return null;
-                              
-                              return (
+                    ))}
+                  </div>
+
+                  {/* Selected Products */}
+                  <div className="space-y-4">
+                    {selectedProducts.map((product, index) => (
+                      <div key={index} className="border rounded-lg p-4">
+                        <div className="flex justify-between items-start mb-3">
+                          <div>
+                            <h4 className="font-medium">{product.size}</h4>
+                            <p className="text-sm text-gray-600">₱{product.price.toLocaleString()}</p>
+                          </div>
+                          <button
+                            onClick={() => handleRemoveProduct(index)}
+                            className="text-red-500 hover:text-red-700"
+                          >
+                            Remove
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          {/* Variety Selection */}
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              Select Varieties
+                            </label>
+                            <div className="space-y-2">
+                              {product.varieties.map((variety) => (
                                 <label key={variety} className="flex items-center">
                                   <input
                                     type="checkbox"
@@ -469,130 +625,173 @@ export default function WalkInOrders() {
                                         : product.selectedVarieties.filter(v => v !== variety);
                                       handleVarietyChange(index, newSelected);
                                     }}
-                                    className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                                    className="rounded border-gray-300 text-blue-600"
                                   />
-                                  <span className="ml-2 text-sm text-gray-700">{variety}</span>
+                                  <span className="ml-2 text-sm">{variety}</span>
                                 </label>
-                              );
-                            })}
+                              ))}
+                            </div>
                           </div>
-                          {product.selectedVarieties.length < (sizeConfigs.find(s => s.name === product.size)?.minVarieties || 1) && (
-                            <p className="mt-1 text-sm text-red-500">
-                              Please select at least {sizeConfigs.find(s => s.name === product.size)?.minVarieties || 1} variety
-                            </p>
-                          )}
-                        </div>
-                        
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700">Quantity</label>
-                          <div className="mt-1 flex rounded-md shadow-sm">
-                            <button
-                              type="button"
-                              onClick={() => handleQuantityChange(index, product.quantity - 1)}
-                              className="px-3 py-1 border border-r-0 border-gray-300 rounded-l-md bg-gray-50 text-gray-500 hover:bg-gray-100"
-                            >
-                              -
-                            </button>
-                            <input
-                              type="number"
-                              value={product.quantity}
-                              onChange={(e) => handleQuantityChange(index, parseInt(e.target.value) || 0)}
-                              min="1"
-                              className="block w-20 border-gray-300 focus:border-blue-500 focus:ring-blue-500 text-center"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => handleQuantityChange(index, product.quantity + 1)}
-                              className="px-3 py-1 border border-l-0 border-gray-300 rounded-r-md bg-gray-50 text-gray-500 hover:bg-gray-100"
-                            >
-                              +
-                            </button>
+
+                          {/* Quantity Selection */}
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              Quantity
+                            </label>
+                            <div className="flex items-center space-x-2">
+                              <button
+                                onClick={() => handleQuantityChange(index, product.quantity - 1)}
+                                className="px-3 py-1 border rounded-md"
+                              >
+                                -
+                              </button>
+                              <input
+                                type="number"
+                                value={product.quantity}
+                                onChange={(e) => handleQuantityChange(index, parseInt(e.target.value) || 1)}
+                                min="1"
+                                className="w-20 text-center border rounded-md"
+                              />
+                              <button
+                                onClick={() => handleQuantityChange(index, product.quantity + 1)}
+                                className="px-3 py-1 border rounded-md"
+                              >
+                                +
+                              </button>
+                            </div>
                           </div>
                         </div>
+
+                        <div className="mt-2 text-right">
+                          Subtotal: ₱{(product.price * product.quantity).toLocaleString()}
+                        </div>
                       </div>
-                      
-                      <div className="mt-2 text-right text-sm font-medium text-gray-900">
-                        Subtotal: ₱{(product.price * product.quantity).toLocaleString()}
-                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-6">
+                    <div className="text-xl font-semibold mb-4">
+                      Total Amount: ₱{totalAmount.toLocaleString()}
                     </div>
-                  ))}
+                    <button
+                      onClick={handleCreateOrder}
+                      disabled={loading || selectedProducts.length === 0}
+                      className="w-full py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      Create Order
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
 
-              <div className="text-xl font-semibold">
-                Total Amount: ₱{totalAmount.toLocaleString()}
-              </div>
+              {/* Step 2: Process Payment */}
+              {currentStep === 2 && (
+                <div className="bg-white p-6 rounded-lg shadow-md mb-6">
+                  <h2 className="text-xl font-semibold mb-4">Process Payment</h2>
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-lg">Order #: {currentOrderId}</p>
+                      <p className="text-lg">Total Amount: ₱{totalAmount.toLocaleString()}</p>
+                    </div>
 
-              <button
-                type="submit"
-                disabled={loading || selectedProducts.length === 0}
-                className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
-              >
-                {loading ? "Processing..." : "Create Order"}
-              </button>
-            </form>
-          </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">Payment Method</label>
+                      <select
+                        value={paymentMethod}
+                        onChange={handlePaymentMethodChange}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                      >
+                        <option value="Cash">Cash</option>
+                        <option value="GCash">GCash</option>
+                      </select>
+                    </div>
 
-          <div className="bg-white p-6 rounded-lg shadow-md">
+                    {paymentMethod === "GCash" && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700">GCash Reference Number</label>
+                        <input
+                          type="text"
+                          value={gcashReference}
+                          onChange={(e) => setGcashReference(e.target.value)}
+                          className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                          placeholder="Enter GCash reference number"
+                          required
+                        />
+                      </div>
+                    )}
+
+                    <button
+                      onClick={handleProcessPayment}
+                      disabled={loading}
+                      className="w-full py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      Process Payment
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Recent Walk-in Orders */}
+          <div className="bg-white p-6 rounded-lg shadow-md mt-8">
             <h2 className="text-xl font-semibold mb-4">Recent Walk-in Orders</h2>
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Order ID</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Order #</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Customer</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Items</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Payment</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reference</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {orders.map((order) => (
+                  {walkInOrders.map((order) => (
                     <tr key={order.id}>
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                        #{order.id.slice(0, 6)}
+                        {order.orderNumber}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {order.customerName}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-500">
-                        {order.items?.map((item, index) => (
+                        {order.items.map((item, index) => (
                           <div key={index} className="mb-1">
                             {item.productSize} - {item.productQuantity}x
-                            {item.productVarieties && item.productVarieties.length > 0 && (
-                              <span className="text-gray-400 text-xs ml-1">
-                                ({item.productVarieties.join(", ")})
-                              </span>
-                            )}
+                            <span className="text-gray-400 text-xs ml-1">
+                              ({item.productVarieties.join(", ")})
+                            </span>
                           </div>
-                        )) || "No items"}
+                        ))}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        ₱{order.orderDetails?.totalAmount?.toLocaleString() || "0"}
+                        ₱{order.totalAmount.toLocaleString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {order.orderDetails?.paymentMethod || "-"}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                          order.orderDetails?.status === "Completed" ? "bg-green-100 text-green-800" :
-                          order.orderDetails?.status === "Pending Verification" ? "bg-purple-100 text-purple-800" :
-                          order.orderDetails?.status === "Order Confirmed" ? "bg-blue-100 text-blue-800" :
-                          order.orderDetails?.status === "Preparing Order" ? "bg-yellow-100 text-yellow-800" :
-                          order.orderDetails?.status === "Ready for Pickup" ? "bg-green-100 text-green-800" :
-                          "bg-gray-100 text-gray-800"
-                        }`}>
-                          {order.orderDetails?.status || "unknown"}
-                        </span>
+                        {order.paymentMethod}
+                        {order.gcashReference && (
+                          <div className="text-xs text-gray-400">
+                            Ref: {order.gcashReference}
+                          </div>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {order.orderDetails?.gcashReference || "-"}
+                        {new Date(order.createdAt).toLocaleString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {order.orderDetails?.createdAt ? new Date(order.orderDetails.createdAt).toLocaleString() : "-"}
+                        <button
+                          onClick={() => {
+                            setCurrentInvoice(order);
+                            setShowInvoice(true);
+                          }}
+                          className="text-blue-600 hover:text-blue-800"
+                        >
+                          View Invoice
+                        </button>
                       </td>
                     </tr>
                   ))}

@@ -173,10 +173,28 @@ type CustomNotification = {
 
 interface OrderDetails {
   orderId: string;
-  size: string;
+  status?: string;
+  paymentStatus?: string;
+  paymentMethod?: string;
+  reference?: string;
+  gcashScreenshotUrl?: string;
   varieties: string[];
+  size: string;
   quantity: number;
+  price?: number;
+  updatedAt?: string;
+  createdAt?: string;
 }
+
+// Bilao size types and deduction amounts
+type BilaoSize = "small" | "medium" | "large" | "extra large";
+
+const BILAO_DEDUCTION: Record<BilaoSize, number> = {
+    "small": 0.5,
+    "medium": 1,
+    "large": 1.5,
+    "extra large": 2
+};
 
 export default function TrackingOrders() {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -426,85 +444,82 @@ export default function TrackingOrders() {
 
     try {
         for (const item of items) {
-            // Check size stock
-            const sizeStocksRef = collection(db, "sizeStocks");
-            const sizeStockQuery = query(sizeStocksRef, where("size", "==", item.productSize));
-            const sizeStockSnapshot = await getDocs(sizeStockQuery);
-            
-            if (sizeStockSnapshot.empty) {
-                stockIssues.push(`Size stock not found for ${item.productSize}`);
-                continue;
-            }
-
-            const sizeStockDoc = sizeStockSnapshot.docs[0];
-            const sizeStock = sizeStockDoc.data();
-            
-            // Check if enough size stock is available
-            if (sizeStock.slices < item.productQuantity) {
-                stockIssues.push(`Insufficient ${item.productSize} stock. Available: ${sizeStock.slices}, Required: ${item.productQuantity}`);
-            }
-
-            // Check variety stocks
-            const sizeConfig = sizeConfigs.find(config => config.name === item.productSize);
-            if (!sizeConfig) {
-                stockIssues.push(`Size configuration not found for ${item.productSize}`);
-                continue;
-            }
-
-            const slicesPerVariety = Math.floor(sizeConfig.totalSlices / item.productVarieties.length);
-            const totalSlicesNeeded = slicesPerVariety * item.productQuantity;
-
-            // Check each variety's stock
-            for (const variety of item.productVarieties) {
-                const varietyStockRef = collection(db, "varietyStocks");
-                const varietySnapshot = await getDocs(varietyStockRef);
+            // Check if this is a fixed-size product (Bibingka)
+            if (item.productVarieties.length === 1 && item.productVarieties[0] === "Bibingka") {
+                // Check fixed-size stock
+                const fixedStocksRef = collection(db, "fixedSizeStocks");
+                const fixedStockQuery = query(
+                    fixedStocksRef,
+                    where("size", "==", item.productSize.toLowerCase())
+                );
+                const fixedStockSnapshot = await getDocs(fixedStockQuery);
                 
-                // Find all matching variety stocks (case-insensitive)
-                const matchingDocs = varietySnapshot.docs.filter(doc => {
-                    const stockVariety = doc.data().variety;
-                    return stockVariety && stockVariety.toLowerCase() === variety.toLowerCase();
-                });
-
-                if (matchingDocs.length === 0) {
-                    stockIssues.push(`Variety stock not found for ${variety}`);
+                if (fixedStockSnapshot.empty) {
+                    stockIssues.push(`Fixed-size stock not found for ${item.productSize} Bibingka`);
                     continue;
                 }
 
-                // Calculate total available slices for this variety
-                const totalAvailableSlices = matchingDocs.reduce((sum, doc) => {
+                // Calculate total available quantity
+                const totalAvailableQuantity = fixedStockSnapshot.docs.reduce((sum, doc) => {
                     const data = doc.data();
-                    return sum + (data.slices || 0);
+                    return sum + (data.quantity || 0);
                 }, 0);
 
-                if (totalAvailableSlices < totalSlicesNeeded) {
-                    stockIssues.push(`Insufficient stock for ${variety}. Available: ${totalAvailableSlices}, Required: ${totalSlicesNeeded}`);
+                if (totalAvailableQuantity < item.productQuantity) {
+                    stockIssues.push(`Insufficient ${item.productSize} Bibingka stock. Available: ${totalAvailableQuantity}, Required: ${item.productQuantity}`);
+                }
+            } else {
+                // For bilao-based products
+                // Calculate deduction per variety based on size and number of varieties
+                const getDeductionPerVariety = (size: string, varietyCount: number) => {
+                  // Special case for 1/4 slice
+                  if (size.toLowerCase() === '1/4 slice' || size.toLowerCase() === '1/4') {
+                    return 0.25; // Always 0.25 bilao for 1/4 slice
+                  }
+
+                  // For other sizes, calculate based on variety count
+                  switch (varietyCount) {
+                    case 1: return 1.0;    // 1 variety = 1 bilao
+                    case 2: return 0.5;    // 2 varieties = 0.5 bilao each
+                    case 3: return 0.34;   // 3 varieties ≈ 0.34 bilao each (approximately 1/3)
+                    case 4: return 0.25;   // 4 varieties = 0.25 bilao each
+                    default: return 0.25;  // Default to 0.25 for any other case
+                  }
+                };
+
+                const deductionAmount = getDeductionPerVariety(item.productSize, item.productVarieties.length);
+                const totalBilaoNeeded = deductionAmount * item.productQuantity;
+
+                // Check each variety's stock
+                for (const variety of item.productVarieties) {
+                  const varietyStockRef = collection(db, "varietyStocks");
+                  const varietyQuery = query(
+                    varietyStockRef,
+                    where("variety", "==", variety),
+                    orderBy("productionDate", "asc")
+                  );
+                  
+                  const varietySnapshot = await getDocs(varietyQuery);
+                  
+                  if (varietySnapshot.empty) {
+                    throw new Error(`Variety stock not found for ${variety}`);
+                  }
+
+                  // Calculate total available bilao for this variety
+                  const totalAvailableBilao = varietySnapshot.docs.reduce((sum, doc) => {
+                    const data = doc.data();
+                    return sum + (data.bilao || 0);
+                  }, 0);
+
+                  if (totalAvailableBilao < totalBilaoNeeded) {
+                    throw new Error(`Insufficient stock for ${variety}. Available: ${totalAvailableBilao.toFixed(2)} bilao, Required: ${totalBilaoNeeded.toFixed(2)} bilao (${item.productVarieties.length} varieties)`);
+                  }
                 }
             }
         }
     } catch (error) {
         console.error("Error checking stock availability:", error);
         stockIssues.push("Error checking stock availability");
-    }
-
-    // Create notifications for stock issues
-    if (stockIssues.length > 0) {
-        const notificationRef = collection(db, "notifications");
-        const notification = {
-            title: "Stock Issues Detected",
-            message: stockIssues.join("\n"),
-            type: "error",
-            createdAt: new Date(),
-            read: false,
-            details: stockIssues,
-            priority: "high",
-            category: "stock"
-        };
-
-        // Add to Firestore
-        await addDoc(notificationRef, notification);
-
-        // Show toast notification
-        toast.error("Stock issues detected. Check notifications for details.");
     }
 
     return stockIssues;
@@ -546,140 +561,197 @@ export default function TrackingOrders() {
         try {
           // Process each item in the order
           for (const item of orderData.items) {
-            // Get size stock
-            const sizeStocksRef = collection(db, "sizeStocks");
-            const sizeStockQuery = query(sizeStocksRef, where("size", "==", item.productSize));
-            const sizeStockSnapshot = await getDocs(sizeStockQuery);
-            
-            if (sizeStockSnapshot.empty) {
-              throw new Error(`Size stock not found for ${item.productSize}`);
-            }
-
-            const sizeStockDoc = sizeStockSnapshot.docs[0];
-            const sizeStock = sizeStockDoc.data();
-            
-            // Check if enough size stock is available
-            if (sizeStock.slices < item.productQuantity) {
-              throw new Error(`Insufficient ${item.productSize} stock. Available: ${sizeStock.slices}, Required: ${item.productQuantity}`);
-            }
-
-            // Get variety stocks and check availability
-            const varietyStocksPromises = item.productVarieties.map(async (variety: string) => {
-              const varietyStockRef = collection(db, "varietyStocks");
-              // Get all variety stocks
-              const varietySnapshot = await getDocs(varietyStockRef);
-              
-              // Find all matching variety stocks (case-insensitive)
-              const matchingDocs = varietySnapshot.docs.filter(doc => {
-                const stockVariety = doc.data().variety;
-                return stockVariety && stockVariety.toLowerCase() === variety.toLowerCase();
-              });
-
-              if (matchingDocs.length === 0) {
-                throw new Error(`Variety stock not found for ${variety}`);
-              }
-
-              return matchingDocs.map(doc => ({
-                doc,
-                data: doc.data()
-              }));
-            });
-
-            const varietyStocksArrays = await Promise.all(varietyStocksPromises);
-            const varietyStocks = varietyStocksArrays.flat();
-
-            // Calculate slices needed per variety
-            const sizeConfig = sizeConfigs.find(config => config.name === item.productSize);
-            if (!sizeConfig) {
-              throw new Error(`Size configuration not found for ${item.productSize}`);
-            }
-
-            const slicesPerVariety = Math.floor(sizeConfig.totalSlices / item.productVarieties.length);
-            const totalSlicesNeeded = slicesPerVariety * item.productQuantity;
-
-            // Check total available slices for each variety
-            for (const variety of item.productVarieties) {
-              const varietyDocs = varietyStocks.filter(vs => 
-                vs.data.variety?.toLowerCase() === variety.toLowerCase()
+            // Check if this is a fixed-size product (Bibingka)
+            if (item.productVarieties.length === 1 && item.productVarieties[0] === "Bibingka") {
+              // Get fixed size stock
+              const fixedStocksRef = collection(db, "fixedSizeStocks");
+              const fixedStockQuery = query(
+                fixedStocksRef,
+                where("size", "==", item.productSize.toLowerCase())
               );
-              const totalAvailableSlices = varietyDocs.reduce((sum, { data }) => sum + (data.slices || 0), 0);
+              const fixedStockSnapshot = await getDocs(fixedStockQuery);
               
-              if (totalAvailableSlices < totalSlicesNeeded) {
-                throw new Error(`Insufficient slices for ${variety}. Available: ${totalAvailableSlices}, Required: ${totalSlicesNeeded}`);
+              if (fixedStockSnapshot.empty) {
+                throw new Error(`Fixed-size stock not found for ${item.productSize} Bibingka`);
+              }
+
+              // Calculate total available quantity
+              const totalAvailableQuantity = fixedStockSnapshot.docs.reduce((sum, doc) => {
+                const data = doc.data();
+                return sum + (data.quantity || 0);
+              }, 0);
+
+              if (totalAvailableQuantity < item.productQuantity) {
+                throw new Error(`Insufficient ${item.productSize} Bibingka stock. Available: ${totalAvailableQuantity}, Required: ${item.productQuantity}`);
+              }
+            } else {
+              // For bilao-based products
+              // Calculate deduction per variety based on size and number of varieties
+              const getDeductionPerVariety = (size: string, varietyCount: number) => {
+                // Special case for 1/4 slice
+                if (size.toLowerCase() === '1/4 slice' || size.toLowerCase() === '1/4') {
+                  return 0.25; // Always 0.25 bilao for 1/4 slice
+                }
+
+                // For other sizes, calculate based on variety count
+                switch (varietyCount) {
+                  case 1: return 1.0;    // 1 variety = 1 bilao
+                  case 2: return 0.5;    // 2 varieties = 0.5 bilao each
+                  case 3: return 0.34;   // 3 varieties ≈ 0.34 bilao each (approximately 1/3)
+                  case 4: return 0.25;   // 4 varieties = 0.25 bilao each
+                  default: return 0.25;  // Default to 0.25 for any other case
+                }
+              };
+
+              const deductionAmount = getDeductionPerVariety(item.productSize, item.productVarieties.length);
+              const totalBilaoNeeded = deductionAmount * item.productQuantity;
+
+              // Check each variety's stock
+              for (const variety of item.productVarieties) {
+                const varietyStockRef = collection(db, "varietyStocks");
+                const varietyQuery = query(
+                  varietyStockRef,
+                  where("variety", "==", variety),
+                  orderBy("productionDate", "asc")
+                );
+                
+                const varietySnapshot = await getDocs(varietyQuery);
+                
+                if (varietySnapshot.empty) {
+                  throw new Error(`Variety stock not found for ${variety}`);
+                }
+
+                // Calculate total available bilao for this variety
+                const totalAvailableBilao = varietySnapshot.docs.reduce((sum, doc) => {
+                  const data = doc.data();
+                  return sum + (data.bilao || 0);
+                }, 0);
+
+                if (totalAvailableBilao < totalBilaoNeeded) {
+                  throw new Error(`Insufficient stock for ${variety}. Available: ${totalAvailableBilao.toFixed(2)} bilao, Required: ${totalBilaoNeeded.toFixed(2)} bilao (${item.productVarieties.length} varieties)`);
+                }
               }
             }
 
-            // Begin transaction
+            // Begin transaction for stock deduction
             await runTransaction(db, async (transaction) => {
-              // Update size stock
-              const newSizeQuantity = sizeStock.slices - item.productQuantity;
-              transaction.update(sizeStockDoc.ref, {
-                slices: newSizeQuantity,
-                lastUpdated: new Date().toISOString()
-              });
+              if (item.productVarieties.length === 1 && item.productVarieties[0] === "Bibingka") {
+                // Handle fixed-size Bibingka stock deduction
+                const fixedStocksRef = collection(db, "fixedSizeStocks");
+                const fixedStockQuery = query(
+                  fixedStocksRef,
+                  where("size", "==", item.productSize.toLowerCase()),
+                  orderBy("productionDate", "asc")
+                );
+                const fixedStockSnapshot = await getDocs(fixedStockQuery);
+                let remainingToDeduct = item.productQuantity;
 
-              // Record size stock history
-              const sizeHistoryRef = doc(collection(db, "stockHistory"));
-              transaction.set(sizeHistoryRef, {
-                stockId: sizeStockDoc.id,
-                size: item.productSize,
-                variety: '',
-                type: 'out',
-                slices: item.productQuantity,
-                previousSlices: sizeStock.slices,
-                newSlices: newSizeQuantity,
-                date: new Date(),
-                updatedBy: "Order System",
-                remarks: `Order pickup - Order ID: ${orderId} - Deducted ${item.productQuantity} ${item.productSize}`,
-                isDeleted: false
-              });
+                for (const stockDoc of fixedStockSnapshot.docs) {
+                  if (remainingToDeduct <= 0) break;
 
-              // Update variety stocks starting from earliest production date
-              for (const variety of item.productVarieties) {
-                let remainingSlicesToDeduct = totalSlicesNeeded;
-                const varietyDocs = varietyStocks
-                  .filter(vs => vs.data.variety?.toLowerCase() === variety.toLowerCase())
-                  .sort((a, b) => new Date(a.data.productionDate).getTime() - new Date(b.data.productionDate).getTime());
+                  const stockData = stockDoc.data();
+                  const currentQuantity = stockData.quantity || 0;
+                  const deductAmount = Math.min(remainingToDeduct, currentQuantity);
+                  const newQuantity = currentQuantity - deductAmount;
 
-                for (const { doc: varietyDoc, data } of varietyDocs) {
-                  if (remainingSlicesToDeduct <= 0) break;
-
-                  const currentSlices = data.slices || 0;
-                  const slicesToDeduct = Math.min(remainingSlicesToDeduct, currentSlices);
-                  const newSlices = currentSlices - slicesToDeduct;
-
-                  transaction.update(varietyDoc.ref, {
-                    slices: newSlices,
+                  const stockRef = stockDoc.ref;
+                  transaction.update(stockRef, {
+                    quantity: newQuantity,
                     lastUpdated: new Date().toISOString()
                   });
 
-                  // Record variety stock history
-                  const varietyHistoryRef = doc(collection(db, "stockHistory"));
-                  transaction.set(varietyHistoryRef, {
-                    stockId: varietyDoc.id,
-                    variety: data.variety,
-              type: 'out',
-                    slices: slicesToDeduct,
-                    previousSlices: currentSlices,
-                    newSlices: newSlices,
-              date: new Date(),
-              updatedBy: "Order System",
-                    remarks: `Order pickup - Order ID: ${orderId} - Deducted ${slicesToDeduct} slices from ${variety}`,
+                  // Record stock history
+                  const historyCollectionRef = collection(db, "stockHistory");
+                  const newHistoryDocRef = doc(historyCollectionRef);
+                  transaction.set(newHistoryDocRef, {
+                    stockId: stockDoc.id,
+                    variety: "Bibingka",
+                    type: "out",
+                    bilao: 0,
+                    previousBilao: 0,
+                    newBilao: 0,
+                    size: item.productSize.toLowerCase(),
+                    quantity: deductAmount,
+                    previousQuantity: currentQuantity,
+                    newQuantity: newQuantity,
+                    date: new Date(),
+                    updatedBy: "Order System",
+                    remarks: `Order pickup - Order ID: ${orderId} - Deducted ${deductAmount} pieces`,
                     isDeleted: false,
-                    productionDate: data.productionDate,
-                    expiryDate: data.expiryDate
+                    productionDate: stockData.productionDate,
+                    expiryDate: stockData.expiryDate
                   });
 
-                  remainingSlicesToDeduct -= slicesToDeduct;
+                  remainingToDeduct -= deductAmount;
                 }
+              } else {
+                // Handle bilao-based stock deduction
+                const deductionAmount = (() => {
+                  // Special case for 1/4 slice
+                  if (item.productSize.toLowerCase() === '1/4 slice' || item.productSize.toLowerCase() === '1/4') {
+                    return 0.25; // Always 0.25 bilao for 1/4 slice
+                  }
 
-                // Verify all slices were deducted
-                if (remainingSlicesToDeduct > 0) {
-                  throw new Error(`Could not deduct all required slices for ${variety}`);
+                  // For other sizes, calculate based on variety count
+                  switch (item.productVarieties.length) {
+                    case 1: return 1.0;    // 1 variety = 1 bilao
+                    case 2: return 0.5;    // 2 varieties = 0.5 bilao each
+                    case 3: return 0.34;   // 3 varieties ≈ 0.34 bilao each
+                    case 4: return 0.25;   // 4 varieties = 0.25 bilao each
+                    default: return 0.25;  // Default to 0.25 for any other case
+                  }
+                })();
+                const totalBilaoNeeded = deductionAmount * item.productQuantity;
+
+                for (const variety of item.productVarieties) {
+                  const varietyStockRef = collection(db, "varietyStocks");
+                  const varietyQuery = query(
+                    varietyStockRef,
+                    where("variety", "==", variety),
+                    orderBy("productionDate", "asc")
+                  );
+                  
+                  const varietySnapshot = await getDocs(varietyQuery);
+                  let remainingToDeduct = totalBilaoNeeded;
+
+                  for (const stockDoc of varietySnapshot.docs) {
+                    if (remainingToDeduct <= 0) break;
+
+                    const stockData = stockDoc.data();
+                    const currentBilao = stockData.bilao || 0;
+                    const deductAmount = Math.min(remainingToDeduct, currentBilao);
+                    const newBilao = currentBilao - deductAmount;
+
+                    const stockRef = stockDoc.ref;
+                    transaction.update(stockRef, {
+                      bilao: newBilao,
+                      lastUpdated: new Date().toISOString()
+                    });
+
+                    // Record stock history with more detailed remarks
+                    const historyCollectionRef = collection(db, "stockHistory");
+                    const newHistoryDocRef = doc(historyCollectionRef);
+                    transaction.set(newHistoryDocRef, {
+                      stockId: stockDoc.id,
+                      variety: variety,
+                      type: "out",
+                      bilao: deductAmount,
+                      previousBilao: currentBilao,
+                      newBilao: newBilao,
+              date: new Date(),
+              updatedBy: "Order System",
+                      remarks: `Order pickup - Order ID: ${orderId} - Deducted ${deductAmount.toFixed(2)} bilao (${item.productVarieties.length} varieties in order)`,
+                      isDeleted: false,
+                      productionDate: stockData.productionDate,
+                      expiryDate: stockData.expiryDate
+                    });
+
+                    remainingToDeduct -= deductAmount;
+                  }
                 }
               }
 
-              // Update order status only after successful stock deduction
+              // Update order status
               transaction.update(orderRef, {
                 status: newStatus,
                 "orderDetails.status": newStatus,

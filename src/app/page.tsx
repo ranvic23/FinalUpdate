@@ -64,8 +64,8 @@ export default function Login() {
   return (
     <div className="fixed inset-0">
       <div className="absolute inset-0 grid grid-cols-2">
-        <div className="bg-bg-yellow"></div>
-        <div className="bg-bg-light-brown"></div>
+      <div className="bg-bg-yellow"></div>
+      <div className="bg-bg-light-brown"></div>
       </div>
       <div className="relative z-10 h-full flex justify-center items-center">
         <div className="flex flex-col justify-center bg-white rounded-3xl p-8 shadow-2xl w-[400px]">

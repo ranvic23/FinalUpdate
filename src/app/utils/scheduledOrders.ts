@@ -19,7 +19,7 @@ export interface ReservedStock {
   id?: string;
   varietyId: string;
   varietyName: string;
-  quantity: number;
+  bilao: number;
   reservedFor: string; // ISO date string
   orderId: string;
   orderStatus: string;
@@ -70,17 +70,17 @@ export const calculateRequiredStock = (
   size: string,
   varieties: string[],
   quantity: number
-): { variety: string; slices: number }[] => {
+): { variety: string; bilao: number }[] => {
   const sizeConfig = sizeConfigs.find(s => s.name === size);
   if (!sizeConfig) return [];
 
-  const slicesPerUnit = sizeConfig.totalSlices;
-  const totalSlices = slicesPerUnit * quantity;
-  const slicesPerVariety = totalSlices / varieties.length;
+  const bilaoPerUnit = sizeConfig.totalSlices;
+  const totalBilao = bilaoPerUnit * quantity;
+  const bilaoPerVariety = totalBilao / varieties.length;
 
   return varieties.map(variety => ({
     variety,
-    slices: slicesPerVariety
+    bilao: bilaoPerVariety
   }));
 };
 
@@ -107,9 +107,9 @@ export const reserveStock = async (
         item.productQuantity
       );
       
-      stockNeeded.forEach(({ variety, slices }) => {
+      stockNeeded.forEach(({ variety, bilao }) => {
         const current = requiredStock.get(variety) || 0;
-        requiredStock.set(variety, current + slices);
+        requiredStock.set(variety, current + bilao);
       });
     });
 
@@ -120,7 +120,7 @@ export const reserveStock = async (
       const reservedStock: Omit<ReservedStock, 'id'> = {
         varietyId: variety,
         varietyName: variety,
-        quantity,
+        bilao: quantity,
         reservedFor: pickupDate,
         orderId,
         orderStatus: "Order Confirmed",

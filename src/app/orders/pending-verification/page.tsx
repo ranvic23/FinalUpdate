@@ -145,31 +145,31 @@ export default function PendingVerificationPage() {
         );
       } else {
         // For rejection, update both payment status and order status to cancelled
-        await updateDoc(orderRef, {
-          "orderDetails.paymentStatus": newStatus,
+      await updateDoc(orderRef, {
+        "orderDetails.paymentStatus": newStatus,
           "orderDetails.status": "Cancelled",
-          "orderDetails.updatedAt": new Date().toISOString(),
-        });
+        "orderDetails.updatedAt": new Date().toISOString(),
+      });
 
         // If it's a scheduled order, release any reserved stock
         if (orderData?.orderDetails?.isScheduled) {
           await releaseReservedStock(orderId, "Cancelled");
         }
 
-        setOrders((prevOrders) =>
-          prevOrders.map((o) =>
-            o.id === orderId
-              ? {
-                  ...o,
-                  orderDetails: {
-                    ...o.orderDetails,
-                    paymentStatus: newStatus,
+      setOrders((prevOrders) =>
+        prevOrders.map((o) =>
+          o.id === orderId
+            ? {
+                ...o,
+                orderDetails: {
+                  ...o.orderDetails,
+                  paymentStatus: newStatus,
                     status: "Cancelled",
-                  },
-                }
-              : o
-          )
-        );
+                },
+              }
+            : o
+        )
+      );
       }
     } catch (err) {
       console.error("Error updating payment status:", err);
@@ -443,8 +443,8 @@ export default function PendingVerificationPage() {
                               gcashScreenshotUrl: order.orderDetails.gcashScreenshotUrl
                             });
                             return (
-                              <div className="text-sm text-gray-900">
-                                {order.orderDetails.gcashReference || "N/A"}
+                          <div className="text-sm text-gray-900">
+                            {order.orderDetails.gcashReference || "N/A"}
                                 {order.orderDetails.paymentMethod.toLowerCase() === "gcash" && 
                                  order.orderDetails.gcashReference === "SCREENSHOT_UPLOADED" &&
                                  order.orderDetails.gcashScreenshotUrl && (
@@ -458,7 +458,7 @@ export default function PendingVerificationPage() {
                                     View Screenshot
                                   </button>
                                 )}
-                              </div>
+                          </div>
                             );
                           })()}
                         </td>
