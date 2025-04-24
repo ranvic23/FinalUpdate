@@ -149,12 +149,30 @@ const calculateVarietyDeduction = (size: string, selectedVarieties: string[], qu
   const bilaoConfig = BILAO_SIZES[size];
   if (!bilaoConfig) return [];
 
-  const { totalBilao, maxVarieties } = bilaoConfig;
+  const { totalBilao } = bilaoConfig; // totalBilao is 1 for Big Bilao and Tray, 0.5 for Half Tray
   const varietyCount = selectedVarieties.length;
-  
-  // Calculate how much of the bilao each variety gets
-  const deductionPerVariety = totalBilao / varietyCount;
-  
+
+  let deductionPerVariety = 0;
+
+  // Adjust deduction logic for Half Tray
+  if (size === 'Half Tray') {
+    if (varietyCount === 1) {
+      deductionPerVariety = totalBilao; // Deduct 1 whole product if only 1 variety
+    } else if (varietyCount === 2) {
+      deductionPerVariety = totalBilao / 2; // Deduct 0.50 per variety if 2 varieties
+    } else if (varietyCount === 3) {
+      deductionPerVariety = totalBilao / 3; // Deduct 0.33 per variety if 3 varieties
+    } else if (varietyCount === 4) {
+      deductionPerVariety = totalBilao / 4; // Deduct 0.25 per variety if 4 varieties
+    }
+  } 
+  // Adjust deduction logic for 1/4 Slice
+  else if (size === '1/4 Slice') {
+    if (varietyCount === 1) {
+      deductionPerVariety = 0.25; // Deduct 0.25 for 1/4 Slice if only 1 variety
+    }
+  }
+
   // Return deduction amount for each variety
   return selectedVarieties.map(variety => ({
     variety,
@@ -325,6 +343,9 @@ export default function WalkInOrders() {
         }
       }
 
+      // Update sales dashboard here
+      await updateSalesDashboard(currentOrderId); // Assuming this function exists
+
       // Reset form
       setSelectedProducts([]);
       setTotalAmount(0);
@@ -420,12 +441,19 @@ export default function WalkInOrders() {
     setPaymentMethod(e.target.value);
   };
 
-  const Invoice = ({ order }: { order: WalkInOrder }) => {
+  const Invoice = ({ order, onClose }: { order: WalkInOrder; onClose: () => void }) => {
     return (
       <div className="bg-white p-8 rounded-lg shadow-lg max-w-2xl mx-auto">
-        <div className="text-center mb-8">
-          <h2 className="text-2xl font-bold">INVOICE</h2>
-          <p className="text-gray-600">Order #{order.orderNumber}</p>
+        <div className="flex justify-between items-center mb-8">
+          <div>
+            <h2 className="text-2xl font-bold">INVOICE</h2>
+            <p className="text-gray-600">Order #{order.orderNumber}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
 
         <div className="mb-6">
@@ -533,16 +561,7 @@ export default function WalkInOrders() {
           {/* Invoice View */}
           {showInvoice && currentInvoice && (
             <div className="mb-6">
-              <Invoice order={currentInvoice} />
-              <div className="mt-6 flex justify-center">
-                <button
-                  onClick={handleCompleteOrder}
-                  disabled={loading}
-                  className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
-                >
-                  {loading ? "Processing..." : "Complete Order"}
-                </button>
-              </div>
+              <Invoice order={currentInvoice} onClose={() => setShowInvoice(false)} />
             </div>
           )}
 
@@ -804,3 +823,7 @@ export default function WalkInOrders() {
     </ProtectedRoute>
   );
 } 
+
+function updateSalesDashboard(currentOrderId: string) {
+  throw new Error("Function not implemented.");
+}

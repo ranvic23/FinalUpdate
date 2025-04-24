@@ -225,6 +225,7 @@ export default function Dashboard() {
   const fetchSalesData = async () => {
     try {
       const ordersRef = collection(db, "orders");
+      const walkInOrdersRef = collection(db, "walkInOrders"); // Reference to walk-in orders
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       
@@ -251,7 +252,16 @@ export default function Dashboard() {
         orderBy("orderDetails.updatedAt", "desc")
       );
 
-      const querySnapshot = await getDocs(completedOrdersQuery);
+      const walkInOrdersQuery = query(
+        walkInOrdersRef,
+        where("status", "==", "completed"),
+        orderBy("createdAt", "desc")
+      );
+
+      const [completedOrdersSnapshot, walkInOrdersSnapshot] = await Promise.all([
+        getDocs(completedOrdersQuery),
+        getDocs(walkInOrdersQuery)
+      ]);
       
       let dailyTotal = 0;
       let weeklyTotal = 0;
@@ -267,10 +277,40 @@ export default function Dashboard() {
         };
       });
 
-      querySnapshot.forEach((doc) => {
+      // Process completed orders
+      completedOrdersSnapshot.forEach((doc) => {
         const orderData = doc.data();
         const completedDate = new Date(orderData.orderDetails.updatedAt);
         const amount = orderData.orderDetails.totalAmount || 0;
+
+        // Check if order was completed today
+        if (completedDate.toDateString() === today.toDateString()) {
+          dailyTotal += amount;
+        }
+
+        // Check if order was completed in the current week (Monday to Sunday)
+        if (completedDate >= weekStart && completedDate <= weekEnd) {
+          weeklyTotal += amount;
+
+          // Add to daily chart data
+          const dateStr = completedDate.toISOString().split('T')[0];
+          const dayIndex = last7Days.findIndex(day => day.date === dateStr);
+          if (dayIndex !== -1) {
+            last7Days[dayIndex].total += amount;
+          }
+        }
+
+        // Check if order was completed in the last month
+        if (completedDate >= lastMonthStart && completedDate <= lastMonthEnd) {
+          monthlyTotal += amount;
+        }
+      });
+
+      // Process walk-in orders
+      walkInOrdersSnapshot.forEach((doc) => {
+        const orderData = doc.data();
+        const completedDate = new Date(orderData.createdAt);
+        const amount = orderData.totalAmount || 0;
 
         // Check if order was completed today
         if (completedDate.toDateString() === today.toDateString()) {
@@ -811,12 +851,21 @@ export default function Dashboard() {
           reportTitle = 'Sales Report';
       }
 
+      // Fetch completed orders
       const ordersSnapshot = await getDocs(query(
         collection(db, "orders"),
         where("orderDetails.status", "==", "Completed"),
         where("orderDetails.paymentStatus", "==", "approved"),
         where("orderDetails.updatedAt", ">=", startDate.toISOString()),
         where("orderDetails.updatedAt", "<=", endDate.toISOString())
+      ));
+
+      // Fetch completed walk-in orders
+      const walkInOrdersSnapshot = await getDocs(query(
+        collection(db, "walkInOrders"),
+        where("status", "==", "completed"),
+        where("createdAt", ">=", startDate.toISOString()),
+        where("createdAt", "<=", endDate.toISOString())
       ));
 
       const orders = ordersSnapshot.docs.map(doc => {
@@ -865,9 +914,26 @@ export default function Dashboard() {
             customerName
           };
         }
-      }).sort((a, b) => a.date.getTime() - b.date.getTime());
+      });
 
-      const validOrders = orders.filter(order => !isNaN(order.amount) && order.amount > 0);
+      // Process walk-in orders
+      const walkInOrders = walkInOrdersSnapshot.docs.map(doc => {
+        const data = doc.data();
+        const amount = data.totalAmount || 0;
+        const date = new Date(data.createdAt);
+
+        return {
+          id: doc.id,
+          amount,
+          date,
+          customerName: data.customerName || "Walk-in Customer"
+        };
+      });
+
+      // Combine both orders
+      const allOrders = [...orders, ...walkInOrders];
+
+      const validOrders = allOrders.filter(order => !isNaN(order.amount) && order.amount > 0);
       const totalSales = validOrders.reduce((sum, order) => sum + order.amount, 0);
       const totalTransactions = validOrders.length;
 
