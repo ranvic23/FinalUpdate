@@ -140,6 +140,12 @@ interface SalesReportData {
   }[];
 }
 
+interface OrderAlerts {
+  today: number;
+  tomorrow: number;
+  total: number;
+}
+
 export default function Dashboard() {
   const router = useRouter(); // Next.js navigation
   const [salesData, setSalesData] = useState<SalesData>({ daily: 0, weekly: 0, monthly: 0, trend: [] });
@@ -152,9 +158,9 @@ export default function Dashboard() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [orderAlerts, setOrderAlerts] = useState({
-    scheduled: 0,
-    online: 0,
+  const [orderAlerts, setOrderAlerts] = useState<OrderAlerts>({
+    today: 0,
+    tomorrow: 0,
     total: 0
   });
   const [salesChartData, setSalesChartData] = useState<ChartData>({
@@ -502,51 +508,60 @@ export default function Dashboard() {
 
   const fetchRecentOrders = async () => {
     try {
+      // Fetch regular orders
       const ordersRef = collection(db, "orders");
-      const recentQuery = query(
+      const recentOrdersQuery = query(
         ordersRef,
         orderBy("orderDetails.createdAt", "desc"),
         limit(10)
       );
-      const snapshot = await getDocs(recentQuery);
+
+      // Fetch walk-in orders
+      const walkInOrdersRef = collection(db, "walkInOrders");
+      const recentWalkInQuery = query(
+        walkInOrdersRef,
+        orderBy("createdAt", "desc"),
+        limit(10)
+      );
+
+      // Get both order types
+      const [ordersSnapshot, walkInSnapshot] = await Promise.all([
+        getDocs(recentOrdersQuery),
+        getDocs(recentWalkInQuery)
+      ]);
       
-      const orders = await Promise.all(snapshot.docs.map(async (docSnapshot) => {
+      // Process regular orders
+      const regularOrders = await Promise.all(ordersSnapshot.docs.map(async (docSnapshot) => {
         const data = docSnapshot.data();
         let customerName;
 
-        // For walk-in orders
-        if (data.orderType === "walk-in") {
-          customerName = data.customerName || data.customerDetails?.name || "Walk-in Customer";
-        } 
-        // For registered users
-        else {
         if (data.userDetails?.firstName && data.userDetails?.lastName) {
-            customerName = `${data.userDetails.firstName} ${data.userDetails.lastName}`.trim();
+          customerName = `${data.userDetails.firstName} ${data.userDetails.lastName}`.trim();
         } else if (data.customerDetails?.name) {
           customerName = data.customerDetails.name;
-          } else if (data.orderDetails.customerName) {
-            customerName = data.orderDetails.customerName;
-          } else {
-            // Fetch user details from customers collection
-            try {
-              const userRef = doc(db, "customers", data.userId);
-              const userDoc = await getDoc(userRef);
-              if (userDoc.exists()) {
-                const userData = userDoc.data();
-                if (userData.name) {
-                  const nameParts = userData.name.split(" ");
-                  const firstName = nameParts[0];
-                  const lastName = nameParts.slice(1).join(" ") || "";
-                  customerName = `${firstName} ${lastName}`.trim();
-                } else {
-                  customerName = `${userData.firstName || ""} ${userData.lastName || ""}`.trim();
-                }
+        } else if (data.orderDetails?.customerName) {
+          customerName = data.orderDetails.customerName;
+        } else if (data.userId) { // Only try to fetch user details if userId exists
+          try {
+            const userRef = doc(db, "customers", data.userId);
+            const userDoc = await getDoc(userRef);
+            if (userDoc.exists()) {
+              const userData = userDoc.data();
+              if (userData.name) {
+                const nameParts = userData.name.split(" ");
+                const firstName = nameParts[0];
+                const lastName = nameParts.slice(1).join(" ") || "";
+                customerName = `${firstName} ${lastName}`.trim();
+              } else {
+                customerName = `${userData.firstName || ""} ${userData.lastName || ""}`.trim();
               }
-            } catch (error) {
-              console.error("Error fetching customer details:", error);
-              customerName = "Unknown Customer";
             }
+          } catch (error) {
+            console.error("Error fetching customer details:", error);
+            customerName = "Unknown Customer";
           }
+        } else {
+          customerName = "Unknown Customer";
         }
 
         return {
@@ -557,8 +572,25 @@ export default function Dashboard() {
           date: new Date(data.orderDetails.createdAt)
         };
       }));
-      
-      setRecentOrders(orders);
+
+      // Process walk-in orders
+      const walkInOrders = walkInSnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          customerName: data.customerName || "Walk-in Customer",
+          total: data.totalAmount,
+          status: "completed",
+          date: new Date(data.createdAt)
+        };
+      });
+
+      // Combine and sort both types of orders by date
+      const allOrders = [...regularOrders, ...walkInOrders]
+        .sort((a, b) => b.date.getTime() - a.date.getTime())
+        .slice(0, 10); // Keep only the 10 most recent orders
+
+      setRecentOrders(allOrders);
     } catch (error) {
       console.error("Error fetching recent orders:", error);
       setNotifications(prev => [...prev, {
@@ -700,31 +732,31 @@ export default function Dashboard() {
       const tomorrow = new Date(today);
       tomorrow.setDate(tomorrow.getDate() + 1);
 
-      // Fetch online orders (pending and processing) excluding cash payments
-      const onlineOrdersRef = collection(db, "orders");
-      const onlineQuery = query(
-        onlineOrdersRef,
-        where("orderDetails.status", "in", ["Pending", "Processing"]),
-        where("orderDetails.orderType", "==", "online"),
-        where("orderDetails.paymentMethod", "!=", "Cash") // Exclude cash payments
+      // Fetch today's online orders
+      const todayOrdersQuery = query(
+        collection(db, "orders"),
+        where("orderDetails.pickupDate", ">=", today.toISOString()),
+        where("orderDetails.pickupDate", "<", tomorrow.toISOString()),
+        where("orderDetails.status", "in", ["Order Confirmed", "Stock Reserved", "Preparing Order"])
       );
-      const onlineSnapshot = await getDocs(onlineQuery);
 
-      // Fetch scheduled orders for tomorrow
-      const scheduledOrdersRef = collection(db, "orders");
-      const scheduledQuery = query(
-        scheduledOrdersRef,
-        where("orderDetails.status", "in", ["Pending", "Processing"]),
-        where("orderDetails.orderType", "==", "scheduled"),
+      // Fetch tomorrow's orders
+      const tomorrowOrdersQuery = query(
+        collection(db, "orders"),
         where("orderDetails.pickupDate", ">=", tomorrow.toISOString()),
-        where("orderDetails.pickupDate", "<", new Date(tomorrow.getTime() + 24 * 60 * 60 * 1000).toISOString())
+        where("orderDetails.pickupDate", "<", new Date(tomorrow.getTime() + 24 * 60 * 60 * 1000).toISOString()),
+        where("orderDetails.status", "in", ["Order Confirmed", "Stock Reserved", "Preparing Order"])
       );
-      const scheduledSnapshot = await getDocs(scheduledQuery);
+
+      const [todaySnapshot, tomorrowSnapshot] = await Promise.all([
+        getDocs(todayOrdersQuery),
+        getDocs(tomorrowOrdersQuery)
+      ]);
 
       setOrderAlerts({
-        scheduled: scheduledSnapshot.size,
-        online: onlineSnapshot.size,
-        total: scheduledSnapshot.size + onlineSnapshot.size
+        today: todaySnapshot.size,
+        tomorrow: tomorrowSnapshot.size,
+        total: todaySnapshot.size + tomorrowSnapshot.size
       });
 
     } catch (error) {
@@ -1199,10 +1231,10 @@ export default function Dashboard() {
               <p className="text-xl font-semibold text-gray-900">{orderAlerts.total}</p>
               <div className="flex gap-2 mt-1">
                 <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
-                  {orderAlerts.scheduled} Tomorrow
+                  {orderAlerts.tomorrow} Tomorrow
                 </span>
                 <span className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full">
-                  {orderAlerts.online} Online
+                  {orderAlerts.today} Today
                 </span>
               </div>
             </div>
