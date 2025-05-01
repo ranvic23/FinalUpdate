@@ -5,8 +5,17 @@ import { signOut } from "firebase/auth";
 import { auth } from "../firebase-config";
 import ProtectedRoute from "@/app/components/protectedroute";
 import { useEffect, useState } from "react";
-import { collection, getDocs, query, where, orderBy, limit, Timestamp, doc, getDoc } from "firebase/firestore";
-import { db } from "../firebase-config"; // Adjust the import based on your setup
+import { 
+  collection, 
+  getDocs, 
+  query, 
+  where, 
+  orderBy, 
+  limit, 
+  doc, 
+  getDoc 
+} from "firebase/firestore";
+import { db } from "../firebase-config";
 import { Line, Bar } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -22,6 +31,7 @@ import {
 } from 'chart.js';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import Sidebar from "@/app/components/Sidebar";
 
 // Register ChartJS components
 ChartJS.register(
@@ -46,6 +56,7 @@ interface SalesData {
 interface PopularProduct {
   name: string;
   totalSlices: number;
+  quantity: number;
   revenue: number;
 }
 
@@ -60,11 +71,25 @@ interface RecentOrder {
 interface LowStockItem {
   id: string;
   name: string;
-  currentStock: number;
-  minimumStock: number;
-  criticalLevel: number;
+  quantity: number;
+  threshold: number;
   type: 'variety' | 'fixed';
   severity: 'critical' | 'low';
+  currentStock: number;
+}
+
+interface Stock {
+  id: string;
+  sizeName: string;
+  varieties: string[];
+  quantity: number;
+  lastUpdated: Date;
+  type: 'variety' | 'fixed';
+  bilao: number;
+  minimumStock: number;
+  variety: string;
+  size?: string;
+  criticalLevel: number;
 }
 
 interface ChartData {
@@ -73,57 +98,21 @@ interface ChartData {
     label: string;
     data: number[];
     borderColor?: string | string[];
-    backgroundColor?: string | string[];
+    backgroundColor: string | string[];
     tension?: number;
     borderWidth?: number;
   }[];
 }
 
-interface Stock {
-  id: string;
-  quantity: number;
-  minimumStock: number;
-  criticalLevel: number;
-  type: 'variety' | 'fixed';
-  variety: string;
-  bilao: number;
-  productionDate?: string;
-  expiryDate?: string;
-  lastUpdated?: string;
-  size?: string;
-}
-
-interface OrderData {
-  id: string;
-  orderType: string;
-  customerName: string;
-  orderDetails: {
-    status: string;
-    orderStatus: string;
-    completedAt: string;
-    totalAmount: number;
-    customerName: string;
-    createdAt: string;
-    updatedAt: string;
-    isWalkin: boolean;
-  };
-  userDetails?: {
-    firstName: string;
-    lastName: string;
-  };
-  customerDetails?: {
-    name: string;
-  };
-  items: any[];
-}
-
 interface Notification {
   id: string;
   message: string;
-  type: 'success' | 'error' | 'warning';
-  orderId?: string;
+  type: string;
   createdAt: Date;
   isOrderNotification?: boolean;
+  orderId?: string;
+  isGCash?: boolean;
+  paymentMethod?: string;
 }
 
 // Add new interfaces for the report preview
@@ -133,12 +122,22 @@ interface SalesReportData {
   totalSales: number;
   totalTransactions: number;
   transactions: {
-  id: string;
+    id: string;
     customerName: string;
     amount: number;
     date: Date;
   }[];
 }
+
+const chartOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: {
+      position: 'top' as const,
+    },
+  },
+};
 
 export default function Dashboard() {
   const router = useRouter(); // Next.js navigation
@@ -155,7 +154,8 @@ export default function Dashboard() {
   const [orderAlerts, setOrderAlerts] = useState({
     scheduled: 0,
     online: 0,
-    total: 0
+    total: 0,
+    other: 0
   });
   const [salesChartData, setSalesChartData] = useState<ChartData>({
     labels: [],
@@ -279,6 +279,7 @@ export default function Dashboard() {
         date.setDate(date.getDate() + i);
         return {
           date: date.toISOString().split('T')[0],
+          dayName: date.toLocaleDateString('en-US', { weekday: 'long' }),
           total: 0
         };
       });
@@ -352,16 +353,11 @@ export default function Dashboard() {
       });
 
       // Format data for the chart
-      const chartData = last7Days.map(day => ({
-        name: new Date(day.date).toLocaleDateString('en-US', { weekday: 'short' }),
-        amount: day.total
-      }));
-
       setSalesChartData({
-        labels: chartData.map(d => d.name),
+        labels: last7Days.map(day => day.dayName),
         datasets: [{
           label: 'Daily Sales',
-          data: chartData.map(d => d.amount),
+          data: last7Days.map(day => day.total),
           borderColor: 'rgb(75, 192, 192)',
           backgroundColor: 'rgba(75, 192, 192, 0.5)',
           tension: 0.1
@@ -503,34 +499,43 @@ export default function Dashboard() {
   const fetchRecentOrders = async () => {
     try {
       const ordersRef = collection(db, "orders");
-      const recentQuery = query(
-        ordersRef,
-        orderBy("orderDetails.createdAt", "desc"),
-        limit(10)
-      );
-      const snapshot = await getDocs(recentQuery);
-      
+      const q = query(ordersRef, orderBy("orderDetails.createdAt", "desc"), limit(5));
+      const snapshot = await getDocs(q);
+
       const orders = await Promise.all(snapshot.docs.map(async (docSnapshot) => {
         const data = docSnapshot.data();
-        let customerName;
+        let customerName = "";
+
+        console.log(`Processing order ${docSnapshot.id}:`, {
+          orderType: data.orderType,
+          customerName: data.customerName,
+          userDetails: data.userDetails,
+          customerDetails: data.customerDetails,
+          orderDetails: data.orderDetails
+        });
 
         // For walk-in orders
         if (data.orderType === "walk-in") {
-          customerName = data.customerName || data.customerDetails?.name || "Walk-in Customer";
+          customerName = data.customerName || "Walk-in Customer";
         } 
         // For registered users
         else {
-        if (data.userDetails?.firstName && data.userDetails?.lastName) {
-            customerName = `${data.userDetails.firstName} ${data.userDetails.lastName}`.trim();
-        } else if (data.customerDetails?.name) {
-          customerName = data.customerDetails.name;
-          } else if (data.orderDetails.customerName) {
-            customerName = data.orderDetails.customerName;
+          if (data.userDetails?.firstName || data.userDetails?.lastName) {
+            customerName = `${data.userDetails.firstName || ""} ${data.userDetails.lastName || ""}`.trim();
+          } else if (data.customerDetails?.name) {
+            customerName = data.customerDetails.name;
+          } else if (data.customerName) {
+            customerName = data.customerName;
           } else {
             // Fetch user details from customers collection
             try {
               const userRef = doc(db, "customers", data.userId);
               const userDoc = await getDoc(userRef);
+              console.log(`Fetching user details for userId: ${data.userId}`, {
+                exists: userDoc.exists(),
+                data: userDoc.exists() ? userDoc.data() : null
+              });
+              
               if (userDoc.exists()) {
                 const userData = userDoc.data();
                 if (userData.name) {
@@ -544,7 +549,6 @@ export default function Dashboard() {
               }
             } catch (error) {
               console.error("Error fetching customer details:", error);
-              customerName = "Unknown Customer";
             }
           }
         }
@@ -561,70 +565,46 @@ export default function Dashboard() {
       setRecentOrders(orders);
     } catch (error) {
       console.error("Error fetching recent orders:", error);
-      setNotifications(prev => [...prev, {
-        id: `error-${Date.now()}`,
-        message: "Failed to fetch recent orders",
-        type: 'error',
-        createdAt: new Date()
-      }]);
     }
   };
 
   const fetchLowStockItems = async () => {
     try {
-      // Fetch variety stocks
-      const varietyStocksRef = collection(db, "varietyStocks");
-      const varietySnapshot = await getDocs(varietyStocksRef);
-      const varietyStocks = varietySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Stock[];
+      const stocksSnapshot = await getDocs(collection(db, "stocks"));
+      const lowStockItems = stocksSnapshot.docs
+        .map(doc => {
+          const data = doc.data();
+          const currentStock = data.quantity || 0;
+          const minimumStock = data.minimumStock || 0;
+          const criticalLevel = data.criticalLevel || 0;
 
-      // Fetch fixed size stocks
-      const fixedStocksRef = collection(db, "fixedSizeStocks");
-      const fixedSnapshot = await getDocs(fixedStocksRef);
-      const fixedStocks = fixedSnapshot.docs.map(doc => ({
-          id: doc.id,
-        ...doc.data()
-      })) as Stock[];
-
-      // Combine and filter low stock items
-      const allStocks = [...varietyStocks, ...fixedStocks];
-      const lowStocks = allStocks
-        .filter(stock => {
-          const stockLevel = stock.type === 'variety' ? stock.bilao : stock.quantity;
-          return stockLevel <= stock.minimumStock;
+          if (currentStock <= criticalLevel || currentStock <= minimumStock) {
+            return {
+              id: doc.id,
+              name: data.variety || data.sizeName,
+              quantity: currentStock,
+              threshold: minimumStock,
+              type: data.type || 'fixed',
+              severity: currentStock <= criticalLevel ? 'critical' : 'low',
+              currentStock: currentStock
+            };
+          }
+          return null;
         })
-        .map(stock => ({
-          id: stock.id,
-          name: stock.type === 'variety' ? stock.variety : `${stock.variety} (${stock.size})`,
-          currentStock: stock.type === 'variety' ? stock.bilao : stock.quantity || 0,
-          minimumStock: stock.minimumStock,
-          criticalLevel: stock.criticalLevel,
-          type: stock.type,
-          severity: (stock.type === 'variety' ? stock.bilao : stock.quantity || 0) <= stock.criticalLevel ? 'critical' as const : 'low' as const
-        }));
+        .filter((item): item is LowStockItem => item !== null)
+        .sort((a, b) => {
+          // Sort by severity (critical first) and then by stock level
+          if (a.severity === 'critical' && b.severity !== 'critical') return -1;
+          if (a.severity !== 'critical' && b.severity === 'critical') return 1;
+          return a.quantity - b.quantity;
+        });
 
-      setLowStockItems(lowStocks);
-
-      // Add notifications for critical stock levels
-      const criticalStocks = lowStocks.filter(item => item.severity === 'critical');
-      if (criticalStocks.length > 0) {
-        setNotifications(prev => [
-          ...prev.filter(n => !n.id.startsWith('stock-')), // Remove old stock notifications
-          ...criticalStocks.map(item => ({
-            id: `stock-${item.id}`,
-            message: `Critical stock level: ${item.name} (${item.currentStock} remaining)`,
-            type: 'warning' as const,
-            createdAt: new Date()
-          }))
-        ]);
-      }
+      setLowStockItems(lowStockItems);
     } catch (error) {
       console.error("Error fetching low stock items:", error);
-          setNotifications(prev => [...prev, {
+      setNotifications(prev => [...prev, {
         id: `error-${Date.now()}`,
-        message: "Failed to fetch stock levels",
+        message: "Failed to fetch low stock items",
         type: 'error',
         createdAt: new Date()
       }]);
@@ -695,36 +675,96 @@ export default function Dashboard() {
 
   const fetchOrderAlerts = async () => {
     try {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
+      // Get current date in local timezone
+      const now = new Date();
+      
+      // Create today and tomorrow dates at midnight for clean comparison
+      const localToday = new Date(now);
+      localToday.setHours(0, 0, 0, 0);
+      
+      const localTomorrow = new Date(localToday);
+      localTomorrow.setDate(localTomorrow.getDate() + 1);
+      
+      // For simple comparison - we'll compare dates directly
+      console.log("Today's date object:", localToday);
+      console.log("Tomorrow's date object:", localTomorrow);
 
-      // Fetch online orders (pending and processing) excluding cash payments
-      const onlineOrdersRef = collection(db, "orders");
-      const onlineQuery = query(
-        onlineOrdersRef,
-        where("orderDetails.status", "in", ["Pending", "Processing"]),
-        where("orderDetails.orderType", "==", "online"),
-        where("orderDetails.paymentMethod", "!=", "Cash") // Exclude cash payments
+      // Get all active orders
+      const ordersRef = collection(db, "orders");
+      // Fetch all online orders (not walk-in)
+      const ordersQuery = query(
+        ordersRef,
+        where("orderDetails.status", "not-in", ["Completed", "Cancelled"]),
+        orderBy("orderDetails.createdAt", "desc")
       );
-      const onlineSnapshot = await getDocs(onlineQuery);
 
-      // Fetch scheduled orders for tomorrow
-      const scheduledOrdersRef = collection(db, "orders");
-      const scheduledQuery = query(
-        scheduledOrdersRef,
-        where("orderDetails.status", "in", ["Pending", "Processing"]),
-        where("orderDetails.orderType", "==", "scheduled"),
-        where("orderDetails.pickupDate", ">=", tomorrow.toISOString()),
-        where("orderDetails.pickupDate", "<", new Date(tomorrow.getTime() + 24 * 60 * 60 * 1000).toISOString())
-      );
-      const scheduledSnapshot = await getDocs(scheduledQuery);
+      const ordersSnapshot = await getDocs(ordersQuery);
+      console.log(`Found ${ordersSnapshot.size} active orders total`);
+      
+      let todayOrders = 0;
+      let tomorrowOrders = 0;
+      let otherOrders = 0;  // For orders without a date or with dates beyond today/tomorrow
+      
+      // Process each order
+      ordersSnapshot.forEach(doc => {
+        const data = doc.data();
+        // Skip walk-in orders, we only want online orders
+        if (data.orderType === "walk-in") {
+          return;
+        }
+        
+        const pickupDate = data.orderDetails?.pickupDate;
+        console.log(`Order ${doc.id} pickup date:`, pickupDate);
+        
+        // Count based on pickup date
+        if (pickupDate && typeof pickupDate === 'string') {
+          try {
+            // Create date object from pickup date
+            // This safely handles various formats like "YYYY-MM-DD" or "MM/DD/YYYY"
+            const pickupDateObj = new Date(pickupDate);
+            console.log(`Order ${doc.id} parsed date:`, pickupDateObj);
+            
+            // Reset time portion to midnight for clean comparison
+            pickupDateObj.setHours(0, 0, 0, 0);
+            
+            // Compare dates by checking if they're the same day
+            const isSameDay = (date1: Date, date2: Date): boolean => {
+              return date1.getFullYear() === date2.getFullYear() &&
+                     date1.getMonth() === date2.getMonth() &&
+                     date1.getDate() === date2.getDate();
+            };
+            
+            if (isSameDay(pickupDateObj, localToday)) {
+              console.log(`Order ${doc.id} is for TODAY`);
+              todayOrders++;
+            } else if (isSameDay(pickupDateObj, localTomorrow)) {
+              console.log(`Order ${doc.id} is for TOMORROW`);
+              tomorrowOrders++;
+            } else {
+              console.log(`Order ${doc.id} is for a different date:`, 
+                          pickupDateObj.toDateString(),
+                          "vs Today:", localToday.toDateString(),
+                          "or Tomorrow:", localTomorrow.toDateString());
+              otherOrders++;
+            }
+          } catch (e) {
+            console.error(`Error parsing date for order ${doc.id}:`, e);
+            otherOrders++;
+          }
+        } else {
+          // Orders without pickup date
+          console.log(`Order ${doc.id} has no pickup date`);
+          otherOrders++;
+        }
+      });
 
+      console.log(`FINAL Order counts - Today: ${todayOrders}, Tomorrow: ${tomorrowOrders}, Other: ${otherOrders}`);
+      
       setOrderAlerts({
-        scheduled: scheduledSnapshot.size,
-        online: onlineSnapshot.size,
-        total: scheduledSnapshot.size + onlineSnapshot.size
+        scheduled: tomorrowOrders,
+        online: todayOrders,
+        total: todayOrders + tomorrowOrders + otherOrders,
+        other: otherOrders
       });
 
     } catch (error) {
@@ -740,45 +780,102 @@ export default function Dashboard() {
 
   const checkNewOrders = async () => {
     try {
+      // Get current date in local timezone
+      const now = new Date();
+      
+      // Create today and tomorrow dates at midnight for clean comparison
+      const localToday = new Date(now);
+      localToday.setHours(0, 0, 0, 0);
+      
+      const localTomorrow = new Date(localToday);
+      localTomorrow.setDate(localTomorrow.getDate() + 1);
+      
+      // Define helper function for same-day comparison
+      const isSameDay = (date1: Date, date2: Date): boolean => {
+        return date1.getFullYear() === date2.getFullYear() &&
+               date1.getMonth() === date2.getMonth() &&
+               date1.getDate() === date2.getDate();
+      };
+      
+      // Get all active orders
       const ordersRef = collection(db, "orders");
       const ordersQuery = query(
         ordersRef,
-        where("orderDetails.status", "==", "Pending Verification"),
-        where("orderDetails.paymentStatus", "==", "pending"),
-        where("orderDetails.paymentMethod", "!=", "Cash"), // Exclude cash payments from verification
+        where("orderDetails.status", "not-in", ["Completed", "Cancelled"]),
         orderBy("orderDetails.createdAt", "desc")
       );
       
-      const snapshot = await getDocs(ordersQuery);
+      const ordersSnapshot = await getDocs(ordersQuery);
+      console.log(`Found ${ordersSnapshot.size} active orders total for notifications`);
       
       // Create a map of current order notifications
-      const currentOrders = new Map();
+      const currentOrders = new Map<string, Notification>();
       
-      snapshot.docs.forEach(doc => {
+      // Process orders
+      ordersSnapshot.docs.forEach(doc => {
         const orderData = doc.data();
         const orderId = doc.id;
-        let customerName;
         
-        // Check if it's a walk-in order
+        // Skip walk-in orders
         if (orderData.orderType === "walk-in") {
-          customerName = orderData.customerName || "Walk-in Customer";
-        } else {
-          // For registered users
-          customerName = orderData.userDetails?.firstName && orderData.userDetails?.lastName
-            ? `${orderData.userDetails.firstName} ${orderData.userDetails.lastName}`
-            : orderData.customerName || "Customer";
+          return;
         }
         
-        // Create notification for pending verification orders
-        const message = `New order needs verification - ${customerName} (${orderData.orderDetails.paymentMethod})`;
-        currentOrders.set(orderId, {
-          id: `order-${orderId}`,
-          message,
-          type: "warning",
-          orderId,
-          createdAt: new Date(orderData.orderDetails.createdAt),
-          isOrderNotification: true
-        });
+        const customerName = getCustomerName(orderData);
+        const pickupDate = orderData.orderDetails?.pickupDate;
+        const paymentMethod = orderData.orderDetails?.paymentMethod;
+        const paymentStatus = orderData.orderDetails?.paymentStatus;
+        
+        // Determine if it's for today, tomorrow, or another date
+        let timeFrame = "scheduled";
+        
+        if (pickupDate && typeof pickupDate === 'string') {
+          try {
+            // Create date object from pickup date string
+            const pickupDateObj = new Date(pickupDate);
+            
+            // Reset time portion to midnight for clean comparison
+            pickupDateObj.setHours(0, 0, 0, 0);
+            
+            if (isSameDay(pickupDateObj, localToday)) {
+              timeFrame = "today";
+            } else if (isSameDay(pickupDateObj, localTomorrow)) {
+              timeFrame = "tomorrow";
+            }
+          } catch (e) {
+            console.error(`Error parsing date for notification order ${orderId}:`, e);
+          }
+        }
+        
+        // Create appropriate notification
+        if ((paymentMethod === "GCash" || paymentMethod === "gcash" || paymentMethod === "GCASH") && 
+            paymentStatus === "pending") {
+          // GCash orders that need verification
+          const message = `New GCash payment needs verification - ${customerName} (for ${timeFrame})`;
+          currentOrders.set(orderId, {
+            id: `order-${orderId}`,
+            message,
+            type: "warning",
+            orderId,
+            createdAt: new Date(orderData.orderDetails.createdAt),
+            isOrderNotification: true,
+            isGCash: true,
+            paymentMethod: "GCash"
+          });
+        } else {
+          // All other orders
+          const message = `New order from ${customerName} (for ${timeFrame})`;
+          currentOrders.set(orderId, {
+            id: `order-${orderId}`,
+            message,
+            type: "info",
+            orderId,
+            createdAt: new Date(orderData.orderDetails.createdAt),
+            isOrderNotification: true,
+            isGCash: false,
+            paymentMethod: paymentMethod || "Cash"
+          });
+        }
       });
 
       // Update notifications
@@ -794,12 +891,40 @@ export default function Dashboard() {
     }
   };
 
+  // Helper function to get customer name
+  const getCustomerName = (orderData: {
+    orderType?: string;
+    customerName?: string;
+    userDetails?: {
+      firstName?: string;
+      lastName?: string;
+    };
+    customerDetails?: {
+      name?: string;
+    };
+  }) => {
+    if (orderData.orderType === "walk-in") {
+      return orderData.customerName || "Walk-in Customer";
+    }
+    
+    if (orderData.userDetails?.firstName && orderData.userDetails?.lastName) {
+      return `${orderData.userDetails.firstName} ${orderData.userDetails.lastName}`;
+    }
+    
+    if (orderData.customerDetails?.name) {
+      return orderData.customerDetails.name;
+    }
+    
+    return orderData.customerName || "Customer";
+  };
+
   const handleLogout = async () => {
     try {
       await signOut(auth); // Sign out user
       router.push("/"); // Redirect to home page
-    } catch (error: any) {
-      console.error("Logout error:", error.code, error.message);
+    } catch (error: Error | unknown) {
+      const errorWithCode = error as { code?: string; message?: string };
+      console.error("Logout error:", errorWithCode.code, errorWithCode.message);
       setNotifications(prev => [...prev, {
         id: `error-${Date.now()}`,
         message: "Logout failed. Please try again.",
@@ -1082,16 +1207,6 @@ export default function Dashboard() {
     );
   }
 
-  const chartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: {
-        position: 'top' as const,
-      },
-    },
-  };
-
   return (
     <ProtectedRoute>
       <div className="flex min-h-screen bg-gray-50">
@@ -1197,13 +1312,18 @@ export default function Dashboard() {
                 </span>
               </div>
               <p className="text-xl font-semibold text-gray-900">{orderAlerts.total}</p>
-              <div className="flex gap-2 mt-1">
+              <div className="flex flex-wrap gap-2 mt-1">
                 <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
                   {orderAlerts.scheduled} Tomorrow
                 </span>
                 <span className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full">
-                  {orderAlerts.online} Online
+                  {orderAlerts.online} Today
                 </span>
+                {orderAlerts.other > 0 && (
+                  <span className="text-xs px-2 py-1 bg-gray-100 text-gray-700 rounded-full">
+                    {orderAlerts.other} Other
+                  </span>
+                )}
               </div>
             </div>
 
@@ -1425,7 +1545,7 @@ export default function Dashboard() {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="text-sm text-gray-900">
-                            {item.currentStock}
+                            {item.quantity}
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -1591,7 +1711,15 @@ export default function Dashboard() {
                       <div 
                         key={notification.id}
                         className="p-4 border-b border-gray-100 bg-yellow-50 cursor-pointer hover:bg-yellow-100"
-                        onClick={() => router.push(`/orders/tracking-orders?id=${notification.orderId}`)}
+                        onClick={() => {
+                          // Route based on payment method
+                          if (notification.paymentMethod === "GCash") {
+                            router.push(`/orders/pending-verification?id=${notification.orderId}`);
+                          } else {
+                            // All other payment methods (including Cash) go to tracking
+                            router.push(`/orders/tracking-orders?id=${notification.orderId}`);
+                          }
+                        }}
                       >
                         <p className="text-sm text-yellow-800">{notification.message}</p>
                         <p className="text-xs text-yellow-600 mt-1">

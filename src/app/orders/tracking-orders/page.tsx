@@ -217,20 +217,25 @@ export default function TrackingOrders() {
 
       const userRef = doc(db, "customers", userId);
       const userDoc = await getDoc(userRef);
+      console.log(`Fetching user details for userId: ${userId}`, {
+        exists: userDoc.exists(),
+        data: userDoc.exists() ? userDoc.data() : null
+      });
+      
       if (userDoc.exists()) {
         const data = userDoc.data();
         if (data.name) {
           const nameParts = data.name.split(" ");
           const firstName = nameParts[0];
-          const lastName = nameParts.slice(1).join(" ") || "N/A";
+          const lastName = nameParts.slice(1).join(" ") || "";
           return {
             firstName,
             lastName,
           };
         } else {
           return {
-            firstName: data.firstName || "N/A",
-            lastName: data.lastName || "N/A",
+            firstName: data.firstName || "",
+            lastName: data.lastName || ""
           };
         }
       }
@@ -347,11 +352,18 @@ export default function TrackingOrders() {
 
     const setupSubscriptions = async () => {
       try {
-    const ordersRef = collection(db, "orders");
+        const ordersRef = collection(db, "orders");
+        
+        // Handling both:
+        // 1. GCash payments that are approved
+        // 2. Cash payments (regardless of status, since they don't need verification)
         const ordersQuery = query(
           ordersRef,
-          where("orderDetails.paymentStatus", "==", "approved"),
-          where("orderDetails.status", "!=", "Pending Verification"),
+          where(
+            "orderDetails.status", 
+            "not-in", 
+            ["Cancelled", "Pending Verification"]
+          ),
           orderBy("orderDetails.createdAt", "desc")
         );
 
@@ -359,10 +371,24 @@ export default function TrackingOrders() {
           try {
             console.log("Received orders snapshot with", snapshot.docs.length, "documents");
             
-        const orderList = await Promise.all(
-          snapshot.docs.map(async (doc) => {
-            const data = doc.data();
-                console.log("Processing order:", doc.id, data);
+            const orderList = await Promise.all(
+              snapshot.docs.map(async (doc) => {
+                const data = doc.data();
+                
+                // Skip orders that are GCash but not approved
+                if (
+                  data.orderDetails?.paymentMethod === "GCash" && 
+                  data.orderDetails?.paymentStatus !== "approved"
+                ) {
+                  console.log(`Skipping GCash order ${doc.id} with payment status: ${data.orderDetails?.paymentStatus}`);
+                  return null;
+                }
+                
+                console.log("Processing order:", doc.id, {
+                  paymentMethod: data.orderDetails?.paymentMethod,
+                  paymentStatus: data.orderDetails?.paymentStatus,
+                  status: data.orderDetails?.status
+                });
                 
                 // Initialize status if not present
                 if (!data.orderDetails?.status) {
@@ -410,7 +436,8 @@ export default function TrackingOrders() {
             );
 
             console.log("Processed orders:", orderList);
-            setOrders(orderList);
+            // Filter out null orders (skipped GCash orders)
+            setOrders(orderList.filter(order => order !== null) as Order[]);
             setLoading(false);
           } catch (error) {
             console.error("Error processing orders:", error);
@@ -1154,9 +1181,26 @@ export default function TrackingOrders() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="text-sm text-gray-900">
-                            {order.userDetails
-                              ? `${order.userDetails.firstName} ${order.userDetails.lastName}`.trim()
-                              : "Walk-in Customer"}
+                            {(() => {
+                              console.log(`Rendering customer name for order ${order.id}:`, {
+                                orderType: order.orderType,
+                                customerName: order.customerName,
+                                userDetails: order.userDetails,
+                                customerDetails: order.customerDetails
+                              });
+                              
+                              if (order.orderType === "walk-in") {
+                                return order.customerName || "Walk-in Customer";
+                              } else if (order.userDetails?.firstName || order.userDetails?.lastName) {
+                                return `${order.userDetails.firstName || ""} ${order.userDetails.lastName || ""}`.trim() || "Unknown Customer";
+                              } else if (order.customerDetails?.name) {
+                                return order.customerDetails.name;
+                              } else if (order.customerName) {
+                                return order.customerName;
+                              } else {
+                                return "Unknown Customer";
+                              }
+                            })()}
                           </div>
                         </td>
                         <td className="px-6 py-4">

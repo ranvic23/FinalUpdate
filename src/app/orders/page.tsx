@@ -13,34 +13,42 @@ import {
   doc,
   onSnapshot,
   getDoc,
+  DocumentReference,
+  where,
 } from "firebase/firestore";
 import Sidebar from "@/app/components/Sidebar";
 
 interface Order {
   id: string;
-  userId: string;
-  userDetails: {
+  orderType: string;
+  customerName?: string;
+  userId?: string;
+  userDetails?: {
     firstName: string;
     lastName: string;
   } | null;
+  customerDetails?: {
+    name: string;
+  };
   orderDetails: {
+    status: string;
+    totalAmount: number;
     createdAt: string;
     pickupDate: string;
     pickupTime: string;
     paymentMethod: string;
     paymentStatus?: string;
-    gcashReference?: string;
-    totalAmount: number;
-    status: string;
     orderType: string;
+    gcashReference?: string;
   };
   items: Array<{
     cartId: string;
     productSize: string;
     productVarieties: string[];
     productQuantity: number;
+    productPrice: number;
   }>;
-  ref?: any;
+  ref?: DocumentReference;
 }
 
 export default function Orders() {
@@ -64,6 +72,11 @@ export default function Orders() {
 
       const userRef = doc(db, "customers", userId);
       const userDoc = await getDoc(userRef);
+      console.log(`Fetching user details for userId: ${userId}`, {
+        exists: userDoc.exists(),
+        data: userDoc.exists() ? userDoc.data() : null
+      });
+      
       if (userDoc.exists()) {
         const data = userDoc.data();
         // Check if user has name field (Google sign-in) or firstName/lastName (regular sign-up)
@@ -71,7 +84,7 @@ export default function Orders() {
           // For Google sign-in users, split the name into first and last name
           const nameParts = data.name.split(" ");
           const firstName = nameParts[0];
-          const lastName = nameParts.slice(1).join(" ") || "N/A";
+          const lastName = nameParts.slice(1).join(" ") || "";
           return {
             firstName,
             lastName,
@@ -79,8 +92,8 @@ export default function Orders() {
         } else {
           // For regular sign-up users
           return {
-            firstName: data.firstName || "N/A",
-            lastName: data.lastName || "N/A",
+            firstName: data.firstName || "",
+            lastName: data.lastName || ""
           };
         }
       }
@@ -103,11 +116,13 @@ export default function Orders() {
           const orderList = await Promise.all(
             snapshot.docs.map(async (doc) => {
               const data = doc.data();
+              console.log(`Processing order ${doc.id}:`, data);
               let userDetails = null;
 
               // Only fetch user details for non-walk-in orders
               if (data.orderType !== "walk-in") {
                 userDetails = await fetchUserDetails(data.userId);
+                console.log(`User details for order ${doc.id}:`, userDetails);
               } else {
                 // For walk-in orders, use customerName
                 userDetails = {
@@ -329,9 +344,26 @@ export default function Orders() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="text-sm text-gray-900">
-                            {order.userDetails
-                              ? `${order.userDetails.firstName} ${order.userDetails.lastName}`
-                              : "Loading..."}
+                            {(() => {
+                              console.log(`Rendering customer name for order ${order.id}:`, {
+                                orderType: order.orderType,
+                                customerName: order.customerName,
+                                userDetails: order.userDetails,
+                                customerDetails: order.customerDetails
+                              });
+                              
+                              if (order.orderType === "walk-in") {
+                                return order.customerName || "Walk-in Customer";
+                              } else if (order.userDetails?.firstName || order.userDetails?.lastName) {
+                                return `${order.userDetails.firstName || ""} ${order.userDetails.lastName || ""}`.trim() || "Unknown Customer";
+                              } else if (order.customerDetails?.name) {
+                                return order.customerDetails.name;
+                              } else if (order.customerName) {
+                                return order.customerName;
+                              } else {
+                                return "Unknown Customer";
+                              }
+                            })()}
                           </div>
                         </td>
                         <td className="px-6 py-4">

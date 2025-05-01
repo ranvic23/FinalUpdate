@@ -34,6 +34,11 @@ interface Order {
     productQuantity: number;
     productPrice: number;
   }>;
+  orderType?: string;
+  customerName?: string;
+  customerDetails?: {
+    name: string;
+  };
 }
 
 export default function CompletedOrders() {
@@ -45,16 +50,17 @@ export default function CompletedOrders() {
   // Function to fetch user details
   const fetchUserDetails = async (userId: string) => {
     try {
-      // Handle walk-in orders (no userId)
       if (!userId) {
-        return {
-          firstName: "Walk-in",
-          lastName: "Customer"
-        };
+        return null;
       }
 
       const userRef = doc(db, "customers", userId);
       const userDoc = await getDoc(userRef);
+      console.log(`Fetching user details for userId: ${userId}`, {
+        exists: userDoc.exists(),
+        data: userDoc.exists() ? userDoc.data() : null
+      });
+      
       if (userDoc.exists()) {
         const data = userDoc.data();
         if (data.name) {
@@ -67,21 +73,15 @@ export default function CompletedOrders() {
           };
         } else {
           return {
-            firstName: data.firstName || "N/A",
+            firstName: data.firstName || "",
             lastName: data.lastName || ""
           };
         }
       }
-      return {
-        firstName: "Unknown",
-        lastName: "Customer"
-      };
+      return null;
     } catch (error) {
       console.error("Error fetching user details:", error);
-      return {
-        firstName: "Unknown",
-        lastName: "Customer"
-      };
+      return null;
     }
   };
 
@@ -208,9 +208,26 @@ export default function CompletedOrders() {
                       </td>
                       <td className="px-6 py-4">
                         <div className="text-sm text-gray-900">
-                          {order.userDetails
-                            ? `${order.userDetails.firstName} ${order.userDetails.lastName}`.trim()
-                            : "Unknown Customer"}
+                          {(() => {
+                            console.log(`Rendering customer name for order ${order.id}:`, {
+                              orderType: order.orderType,
+                              customerName: order.customerName,
+                              userDetails: order.userDetails,
+                              customerDetails: order.customerDetails
+                            });
+                            
+                            if (order.orderType === "walk-in") {
+                              return order.customerName || "Walk-in Customer";
+                            } else if (order.userDetails?.firstName || order.userDetails?.lastName) {
+                              return `${order.userDetails.firstName || ""} ${order.userDetails.lastName || ""}`.trim() || "Unknown Customer";
+                            } else if (order.customerDetails?.name) {
+                              return order.customerDetails.name;
+                            } else if (order.customerName) {
+                              return order.customerName;
+                            } else {
+                              return "Unknown Customer";
+                            }
+                          })()}
                         </div>
                       </td>
                       <td className="px-6 py-4">

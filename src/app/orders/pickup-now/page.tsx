@@ -41,6 +41,11 @@ interface Order {
     productQuantity: number;
     productPrice: number;
   }>;
+  orderType?: string;
+  customerName?: string;
+  customerDetails?: {
+    name: string;
+  };
 }
 
 export default function PickupNow() {
@@ -308,9 +313,26 @@ export default function PickupNow() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="text-sm text-gray-900">
-                            {order.userDetails
-                              ? `${order.userDetails.firstName} ${order.userDetails.lastName}`
-                              : "Loading..."}
+                            {(() => {
+                              console.log(`Rendering customer name for order ${order.id}:`, {
+                                orderType: order.orderType,
+                                customerName: order.customerName,
+                                userDetails: order.userDetails,
+                                customerDetails: order.customerDetails
+                              });
+                              
+                              if (order.orderType === "walk-in") {
+                                return order.customerName || "Walk-in Customer";
+                              } else if (order.userDetails?.firstName || order.userDetails?.lastName) {
+                                return `${order.userDetails.firstName || ""} ${order.userDetails.lastName || ""}`.trim() || "Unknown Customer";
+                              } else if (order.customerDetails?.name) {
+                                return order.customerDetails.name;
+                              } else if (order.customerName) {
+                                return order.customerName;
+                              } else {
+                                return "Unknown Customer";
+                              }
+                            })()}
                           </div>
                         </td>
                         <td className="px-6 py-4">
